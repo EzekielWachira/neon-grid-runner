@@ -1,12 +1,16 @@
 import './style.css';
 import { BEAT, POWER_TIME, type PowerKind } from './core/config.ts';
-import { Sim, type SimEvent } from './core/sim.ts';
+import { Sim, type InputEntry, type SimEvent } from './core/sim.ts';
 import { Bot } from './core/bot.ts';
 import { hashString } from './core/rng.ts';
+import { decodeLog, encodeLog } from './core/ghost.ts';
 import { audio } from './audio/engine.ts';
 import { View, type Quality } from './render/view.ts';
 import { PALETTES } from './render/palette.ts';
 import { Input, type Action } from './input.ts';
+import { MissionRun, freshMissions, isTotal, missionText, rankName, rankOf, type MissionSave, type RunReport } from './meta/missions.ts';
+import { ITEMS, freshGarage, isShipId, itemKey, type GarageSave, type ItemKind, type ShipId } from './meta/garage.ts';
+import { decodeGhostLink, encodeGhostLink, type GhostLink } from './meta/share.ts';
 
 // ---------------------------------------------------------------- save
 
@@ -17,6 +21,16 @@ interface Settings {
   shake: boolean;
   fps: boolean;
   muted: boolean;
+  ghosts: boolean;
+  callsign: string;
+}
+interface GhostSave {
+  seed: number;
+  log: string;
+  score: number;
+  distance: number;
+  ship: ShipId;
+  key?: string;
 }
 interface Save {
   best: number;
@@ -24,13 +38,29 @@ interface Save {
   runs: number;
   daily: Record<string, number>;
   settings: Settings;
+  missions: MissionSave;
+  garage: GarageSave;
+  bestGhost?: GhostSave;
+  dailyGhost?: GhostSave;
 }
 const KEY = 'neon-grid-runner:v1';
 function load(): Save {
-  const fresh: Save = { best: 0, bestDistance: 0, runs: 0, daily: {}, settings: { quality: 'auto', music: 0.8, sfx: 0.9, shake: true, fps: false, muted: false } };
+  const fresh: Save = {
+    best: 0,
+    bestDistance: 0,
+    runs: 0,
+    daily: {},
+    settings: { quality: 'auto', music: 0.8, sfx: 0.9, shake: true, fps: false, muted: false, ghosts: true, callsign: 'Runner' },
+    missions: freshMissions(),
+    garage: freshGarage(),
+  };
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}');
-    return { ...fresh, ...raw, settings: { ...fresh.settings, ...(raw.settings ?? {}) } };
+    const s: Save = { ...fresh, ...raw, settings: { ...fresh.settings, ...(raw.settings ?? {}) } };
+    if (!s.missions?.active?.length) s.missions = freshMissions();
+    s.garage = { ...fresh.garage, ...(raw.garage ?? {}), loadout: { ...fresh.garage.loadout, ...(raw.garage?.loadout ?? {}) } };
+    for (const k of fresh.garage.owned) if (!s.garage.owned.includes(k)) s.garage.owned.push(k);
+    return s;
   } catch {
     return fresh;
   }
@@ -49,7 +79,7 @@ const dateKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 
 // ---------------------------------------------------------------- DOM
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
-const screens = ['title', 'hud', 'pause', 'over', 'settings'] as const;
+const screens = ['title', 'hud', 'pause', 'over', 'settings', 'missions', 'garage'] as const;
 type Screen = (typeof screens)[number];
 function show(...names: Screen[]) {
   for (const s of screens) $(`#${s}`).classList.toggle('visible', names.includes(s));
@@ -92,42 +122,83 @@ const clock = new Clock();
 
 // ---------------------------------------------------------------- state
 
-type State = 'title' | 'run' | 'paused' | 'dying' | 'over';
+interface Rival {
+  seed: number;
+  log: InputEntry[];
+  score: number;
+  ship: ShipId;
+  name: string;
+}
+
+type RunMode = { kind: 'endless' } | { kind: 'daily'; key: string } | { kind: 'ghost'; rival: Rival };
+type State = 'title' | 'garage' | 'run' | 'paused' | 'dying' | 'over';
+
 let state: State = 'title';
 let sim = new Sim((Math.random() * 2 ** 31) | 0);
 let bot: Bot | null = new Bot(sim);
 let attractT = 0;
-let daily: string | null = null;
+let mode: RunMode = { kind: 'endless' };
+let ghost: Sim | null = null;
+let rival: Rival | null = null;
+let missionRun: MissionRun | null = null;
+let challenge: GhostLink | null = null;
 let dyingFor = 0;
 let lastCount = -1;
 let overAt = 0;
+let ghostWasAlive = true;
+
+// Dev-only autopilot (`__ngr.autopilot(true)` in the console lets the bot play a real run).
+let devAutopilot = false;
+let devBot: Bot | null = null;
 
 function startAttract() {
   sim = new Sim((Math.random() * 2 ** 31) | 0);
   bot = new Bot(sim);
   attractT = 0;
+  ghost = null;
+  view.setGhostShip(null);
   view.reset();
   state = 'title';
   renderTitle();
   show('title');
 }
 
-function startRun(isDaily: boolean) {
+function startRun(next: RunMode) {
   const ok = audio.init();
-  daily = isDaily ? dateKey() : null;
-  const seed = isDaily ? hashString(`ngr-daily:${daily}`) : (Math.random() * 2 ** 31) | 0;
+  mode = next;
+  const seed = next.kind === 'daily' ? hashString(`ngr-daily:${next.key}`) : next.kind === 'ghost' ? next.rival.seed : (Math.random() * 2 ** 31) | 0;
   sim = new Sim(seed);
   bot = null;
   devBot = null;
+
+  // Who to race: a ghost race brings its rival; a daily run shows your earlier best from today.
+  rival = null;
+  if (next.kind === 'ghost') rival = next.rival;
+  else if (next.kind === 'daily' && save.settings.ghosts && save.dailyGhost?.key === next.key) {
+    const log = decodeLog(save.dailyGhost.log);
+    if (log) rival = { seed, log, score: save.dailyGhost.score, ship: save.dailyGhost.ship, name: 'Your best' };
+  }
+  ghost = rival ? new Sim(seed, rival.log) : null;
+  ghostWasAlive = true;
   view.reset();
+  view.setGhostShip(rival ? rival.ship : null);
+  $('#ghost-tag').textContent = rival?.name ?? '';
+  $('#hud').classList.toggle('has-ghost', !!rival);
+
+  missionRun = new MissionRun(save.missions, next.kind === 'daily');
   const songStart = clock.start(ok && !!audio.ctx);
   if (ok) audio.startSong(songStart);
   lastCount = -1;
   state = 'run';
-  $('#hud').classList.toggle('daily', isDaily);
+  $('#hud').classList.toggle('daily', next.kind !== 'endless');
+  $('#mode-tag').textContent = next.kind === 'daily' ? 'Daily run' : next.kind === 'ghost' ? 'Ghost race' : '';
   $('#popups').innerHTML = '';
   $('#banner').className = 'banner';
   show('hud');
+}
+
+function retry() {
+  startRun(mode);
 }
 
 function pause() {
@@ -161,31 +232,96 @@ function resume() {
   setTimeout(tick, 450);
 }
 
+/** Banks mission progress and credits for the run that just ended. */
+function settleRun(): RunReport | null {
+  if (!missionRun) return null;
+  const report = missionRun.finish(sim);
+  missionRun = null;
+  save.garage.credits += report.credits;
+  persist();
+  return report;
+}
+
+function quitToMenu() {
+  audio.stopSong(false);
+  clock.resume();
+  clearPowers();
+  settleRun();
+  startAttract();
+}
+
 function gameOver() {
   state = 'over';
   overAt = performance.now();
   save.runs++;
   const score = Math.floor(sim.score);
-  const isBest = score > save.best;
-  if (isBest) save.best = score;
+  const log = encodeLog(sim.log);
+  const ship = save.garage.loadout.ship;
+
+  let isBest = false;
+  if (mode.kind !== 'daily') {
+    isBest = score > save.best;
+    if (isBest) {
+      save.best = score;
+      save.bestGhost = { seed: sim.seed, log, score, distance: Math.floor(sim.distance), ship };
+    }
+  }
   save.bestDistance = Math.max(save.bestDistance, Math.floor(sim.distance));
   let dailyBest = false;
-  if (daily) {
-    dailyBest = score > (save.daily[daily] ?? 0);
-    if (dailyBest) save.daily[daily] = score;
+  if (mode.kind === 'daily') {
+    dailyBest = score > (save.daily[mode.key] ?? 0);
+    if (dailyBest) {
+      save.daily[mode.key] = score;
+      save.dailyGhost = { seed: sim.seed, log, score, distance: Math.floor(sim.distance), ship, key: mode.key };
+    }
   }
+  const report = settleRun();
   persist();
 
   $('#over-score').textContent = fmt(score);
   $('#over-badge').textContent = isBest ? 'New best!' : dailyBest ? 'Daily best!' : '';
   $('#over-badge').classList.toggle('show', isBest || dailyBest);
-  $('#over-mode').textContent = daily ? `Daily run · ${daily}` : 'Endless run';
+  $('#over-mode').textContent = mode.kind === 'daily' ? `Daily run · ${mode.key}` : mode.kind === 'ghost' ? 'Ghost race' : 'Endless run';
   $('#stat-dist').textContent = `${fmt(sim.distance)} m`;
   $('#stat-orbs').textContent = fmt(sim.orbs);
   $('#stat-near').textContent = fmt(sim.nearMisses);
   $('#stat-combo').textContent = fmt(sim.bestCombo);
   $('#stat-sector').textContent = `${sim.sector + 1} · ${PALETTES[sim.sector % PALETTES.length].name}`;
   $('#stat-time').textContent = `${Math.floor(sim.t / 60)}:${String(Math.floor(sim.t % 60)).padStart(2, '0')}`;
+
+  // Ghost verdict.
+  const gl = $('#over-ghost');
+  if (rival) {
+    const diff = score - rival.score;
+    const them = rival.name === 'Your best' ? 'your ghost' : rival.name;
+    gl.textContent = diff > 0 ? `You beat ${them} by ${fmt(diff)}` : `${them[0].toUpperCase()}${them.slice(1)} wins by ${fmt(-diff)}`;
+    gl.className = `over-ghost ${diff > 0 ? 'win' : 'lose'}`;
+  } else {
+    gl.textContent = '';
+    gl.className = 'over-ghost';
+  }
+
+  // Rewards.
+  const rw = $('#over-rewards');
+  rw.innerHTML = '';
+  if (report) {
+    const credits = document.createElement('div');
+    credits.className = 'reward-credits';
+    credits.textContent = `+${fmt(report.credits)} credits`;
+    rw.append(credits);
+    for (const m of report.completed) {
+      const row = document.createElement('div');
+      row.className = 'reward-mission';
+      row.textContent = `✓ ${missionText(m)}  +${m.reward}`;
+      rw.append(row);
+    }
+    if (report.rankAfter > report.rankBefore) {
+      const up = document.createElement('div');
+      up.className = 'reward-rank';
+      up.textContent = `Rank up! ${report.rankAfter} · ${rankName(report.rankAfter)}`;
+      rw.append(up);
+    }
+  }
   show('over');
 }
 
@@ -200,8 +336,9 @@ function onAction(a: Action) {
     else if (a === 'slide') sim.slide();
     else if (a === 'pause') pause();
   } else if (state === 'paused' && a === 'pause') resume();
-  else if (state === 'title' && a === 'jump' && !$('#settings').classList.contains('visible')) startRun(false);
-  else if (state === 'over' && a === 'jump' && performance.now() - overAt > 800) startRun(!!daily);
+  else if (state === 'title' && a === 'jump' && !document.querySelector('.modal.visible')) startRun(challenge ? ghostMode(challenge) : { kind: 'endless' });
+  else if (state === 'over' && a === 'jump' && performance.now() - overAt > 800) retry();
+  else if (state === 'garage' && a === 'pause') closeGarage();
 }
 
 // ---------------------------------------------------------------- events → sound + UI
@@ -234,8 +371,25 @@ function banner(title: string, sub: string) {
   b.className = 'banner show';
 }
 
+let toastTimer = 0;
+function toast(title: string, text: string) {
+  const el = $('#toast');
+  el.innerHTML = '';
+  const b = document.createElement('b');
+  b.textContent = title;
+  const s = document.createElement('span');
+  s.textContent = text;
+  el.append(b, s);
+  el.classList.remove('show');
+  void el.offsetWidth;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => el.classList.remove('show'), 2600);
+}
+
 function onEvent(e: SimEvent) {
   view.handle(e, sim);
+  missionRun?.onEvent(e, sim);
   switch (e.type) {
     case 'jump':
       audio.jump();
@@ -293,6 +447,7 @@ function onEvent(e: SimEvent) {
 // ---------------------------------------------------------------- HUD
 
 const powerEls = new Map<PowerKind, HTMLElement>();
+const tagPos = { x: 0, y: 0 };
 function updateHud() {
   $('#score').textContent = fmt(sim.score);
   const m = $('#mult');
@@ -317,6 +472,24 @@ function updateHud() {
       powerEls.delete(k);
     }
     if (el) (el.querySelector('b') as HTMLElement).style.width = `${(left / POWER_TIME[k]) * 100}%`;
+  }
+
+  // Ghost: live score gap and a name tag that follows its ship.
+  if (ghost && rival) {
+    const diff = Math.round(sim.score - ghost.score);
+    const gd = $('#ghost-diff');
+    gd.textContent = `vs ${rival.name} ${diff > 0 ? '+' : diff < 0 ? '−' : '±'}${fmt(Math.abs(diff))}`;
+    gd.className = `ghost-diff ${diff >= 0 ? 'ahead' : 'behind'}`;
+    const p = view.ghostScreen();
+    const tag = $('#ghost-tag');
+    if (p && ghost.alive) {
+      tagPos.x += (p.x - tagPos.x) * 0.5;
+      tagPos.y += (p.y - tagPos.y) * 0.5;
+      tag.style.transform = `translate(${tagPos.x}px, ${tagPos.y}px) translate(-50%, -100%)`;
+      tag.style.opacity = '1';
+    } else tag.style.opacity = '0';
+    if (ghostWasAlive && !ghost.alive) toast('Ghost down', `${rival.name} crashed at ${fmt(ghost.distance)} m`);
+    ghostWasAlive = ghost.alive;
   }
 
   // Countdown on beats 4–7 of the intro.
@@ -347,23 +520,38 @@ function frame(now: number) {
   const time = now / 1000;
   input.poll();
 
-  if (state === 'title') {
+  if (state === 'title' || state === 'garage') {
     attractT += dt;
     bot!.update();
     sim.step(attractT);
     for (const e of sim.events) view.handle(e, sim);
     sim.events.length = 0;
-    if (!sim.alive) startAttract();
-    view.render(sim, dt, 'title', time);
+    if (!sim.alive) {
+      sim = new Sim((Math.random() * 2 ** 31) | 0);
+      bot = new Bot(sim);
+      attractT = 0;
+    }
+    view.render(sim, dt, state === 'garage' ? 'garage' : 'title', time);
   } else if (state === 'run') {
     if (devAutopilot) (devBot ??= new Bot(sim)).update();
-    sim.step(Math.max(0, clock.now()));
+    const t = Math.max(0, clock.now());
+    sim.step(t);
+    if (ghost) {
+      ghost.step(t);
+      ghost.events.length = 0;
+    }
     for (const e of sim.events) onEvent(e);
     sim.events.length = 0;
+    if (missionRun) {
+      for (const done of missionRun.update(sim)) {
+        toast('Mission complete', `${missionText(done)}  +${done.reward}`);
+        audio.power();
+      }
+    }
     updateHud();
-    view.render(sim, dt, state === 'run' ? 'run' : 'dying', time);
+    view.render(sim, dt, state === 'run' ? 'run' : 'dying', time, ghost);
   } else if (state === 'paused') {
-    view.render(sim, 0.0001, 'paused', time);
+    view.render(sim, 0.0001, 'paused', time, ghost);
   } else {
     if (state === 'dying') {
       dyingFor += dt;
@@ -372,7 +560,7 @@ function frame(now: number) {
         gameOver();
       }
     }
-    view.render(sim, dt, 'dying', time);
+    view.render(sim, dt, 'dying', time, ghost);
   }
 
   if (save.settings.fps) {
@@ -387,13 +575,140 @@ function frame(now: number) {
   requestAnimationFrame(frame);
 }
 
-// ---------------------------------------------------------------- menus
+// ---------------------------------------------------------------- title, missions, garage
+
+function ghostMode(g: GhostLink): RunMode {
+  const log = decodeLog(g.log) ?? [];
+  return { kind: 'ghost', rival: { seed: g.seed, log, score: g.score, ship: g.ship, name: g.name } };
+}
 
 function renderTitle() {
   $('#best').textContent = fmt(save.best);
   const d = save.daily[dateKey()];
   $('#daily-best').textContent = d ? `Today: ${fmt(d)}` : 'New seed today';
+  const rank = rankOf(save.missions);
+  $('#rank-chip').textContent = `Rank ${rank} · ${rankName(rank)}`;
+  $('#credit-chip').textContent = `${fmt(save.garage.credits)} credits`;
+  const race = $<HTMLButtonElement>('#race');
+  race.hidden = !save.bestGhost;
+  if (save.bestGhost) $('#race-sub').textContent = `Beat your ${fmt(save.bestGhost.score)}`;
+
+  const card = $('#challenge');
+  card.hidden = !challenge;
+  if (challenge) {
+    $('#challenge-name').textContent = `${challenge.name}${challenge.day ? ` · daily ${challenge.day}` : ''}`;
+    $('#challenge-score').textContent = `${fmt(challenge.score)} pts`;
+  }
 }
+
+function openMissions() {
+  const ms = save.missions;
+  const rank = rankOf(ms);
+  $('#ms-rank').textContent = `Rank ${rank} · ${rankName(rank)}`;
+  $('#ms-next').style.width = `${((ms.done % 3) / 3) * 100}%`;
+  const left = 3 - (ms.done % 3);
+  $('#ms-next-label').textContent = `${left} more mission${left === 1 ? '' : 's'} to rank ${rank + 1}`;
+  const list = $('#ms-list');
+  list.innerHTML = '';
+  for (const m of ms.active) {
+    const card = document.createElement('div');
+    card.className = 'mission';
+    const title = document.createElement('div');
+    title.className = 'mission-text';
+    title.textContent = missionText(m);
+    const meta = document.createElement('div');
+    meta.className = 'mission-meta';
+    meta.textContent = `${isTotal(m) ? `${fmt(m.progress)} / ${fmt(m.target)}` : 'In one run'} · +${m.reward} credits`;
+    card.append(title, meta);
+    if (isTotal(m)) {
+      const bar = document.createElement('i');
+      const fill = document.createElement('b');
+      fill.style.width = `${Math.min(100, (m.progress / m.target) * 100)}%`;
+      bar.append(fill);
+      card.append(bar);
+    }
+    list.append(card);
+  }
+  show('title', 'missions');
+}
+
+let garageTab: ItemKind = 'ship';
+function openGarage() {
+  state = 'garage';
+  renderGarage();
+  show('garage');
+  placeGaragePreview();
+}
+
+/** Centre the 3D ship in the space the panel leaves free (beside it, or above it on phones). */
+function placeGaragePreview() {
+  const r = $('.garage-panel').getBoundingClientRect();
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  view.garageFocus = w > 640 ? { x: r.left / 2, y: h * 0.52 } : { x: w / 2, y: Math.max(80, r.top / 2) };
+}
+window.addEventListener('resize', () => state === 'garage' && placeGaragePreview());
+
+function closeGarage() {
+  state = 'title';
+  renderTitle();
+  show('title');
+}
+
+function renderGarage() {
+  const g = save.garage;
+  $('#gar-credits').textContent = `${fmt(g.credits)} credits`;
+  for (const b of document.querySelectorAll<HTMLButtonElement>('.gar-tab')) b.classList.toggle('on', b.dataset.tab === garageTab);
+  const grid = $('#gar-items');
+  grid.innerHTML = '';
+  for (const item of ITEMS.filter((i) => i.kind === garageTab)) {
+    const key = itemKey(item.kind, item.id);
+    const owned = g.owned.includes(key);
+    const equipped = g.loadout[item.kind] === item.id;
+    const card = document.createElement('button');
+    card.className = `gar-item${equipped ? ' equipped' : ''}${owned ? ' owned' : ''}`;
+    card.dataset.key = key;
+    card.innerHTML = `<span class="gi-name"></span><span class="gi-desc"></span><span class="gi-state"></span>`;
+    if (item.kind === 'color') {
+      const dot = document.createElement('i');
+      dot.className = 'gi-swatch';
+      dot.style.background = item.swatch === undefined ? 'conic-gradient(#ff2bd6, #22e6ff, #7dff3a, #ffd23f, #ff2bd6)' : `#${item.swatch.toString(16).padStart(6, '0')}`;
+      card.prepend(dot);
+    }
+    card.querySelector('.gi-name')!.textContent = item.name;
+    card.querySelector('.gi-desc')!.textContent = item.desc;
+    card.querySelector('.gi-state')!.textContent = equipped ? 'Equipped' : owned ? 'Equip' : `${fmt(item.cost)} credits`;
+    if (!owned && g.credits < item.cost) card.classList.add('locked');
+    grid.append(card);
+  }
+}
+
+$('#gar-items').addEventListener('click', (e) => {
+  const card = (e.target as HTMLElement).closest<HTMLButtonElement>('.gar-item');
+  if (!card) return;
+  const [kind, id] = card.dataset.key!.split(':') as [ItemKind, string];
+  const item = ITEMS.find((i) => i.kind === kind && i.id === id)!;
+  const g = save.garage;
+  const key = itemKey(kind, id);
+  if (!g.owned.includes(key)) {
+    if (g.credits < item.cost) return;
+    g.credits -= item.cost;
+    g.owned.push(key);
+    audio.power();
+  }
+  (g.loadout as unknown as Record<string, string>)[kind] = id;
+  view.setLoadout(g.loadout);
+  persist();
+  renderGarage();
+});
+for (const b of document.querySelectorAll<HTMLButtonElement>('.gar-tab')) {
+  b.addEventListener('click', () => {
+    garageTab = b.dataset.tab as ItemKind;
+    renderGarage();
+  });
+}
+
+// ---------------------------------------------------------------- settings + wiring
 
 function applySettings() {
   const s = save.settings;
@@ -414,7 +729,19 @@ function openSettings() {
   $<HTMLInputElement>('#set-sfx').value = String(s.sfx);
   $<HTMLInputElement>('#set-shake').checked = s.shake;
   $<HTMLInputElement>('#set-fps').checked = s.fps;
+  $<HTMLInputElement>('#set-ghosts').checked = s.ghosts;
+  $<HTMLInputElement>('#set-callsign').value = s.callsign;
   show('title', 'settings');
+}
+
+async function copyText(text: string, btn: HTMLElement, label: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = 'Copied!';
+    setTimeout(() => (btn.textContent = label), 1500);
+  } catch {
+    window.prompt('Copy this:', text);
+  }
 }
 
 document.addEventListener('click', (e) => {
@@ -426,35 +753,50 @@ document.addEventListener('click', (e) => {
   btn.blur();
 });
 
-$('#play').addEventListener('click', () => startRun(false));
-$('#daily').addEventListener('click', () => startRun(true));
+$('#play').addEventListener('click', () => startRun({ kind: 'endless' }));
+$('#daily').addEventListener('click', () => startRun({ kind: 'daily', key: dateKey() }));
+$('#race').addEventListener('click', () => {
+  const g = save.bestGhost!;
+  startRun({ kind: 'ghost', rival: { seed: g.seed, log: decodeLog(g.log) ?? [], score: g.score, ship: isShipId(g.ship) ? g.ship : 'delta', name: 'Your best' } });
+});
+$('#challenge-go').addEventListener('click', () => challenge && startRun(ghostMode(challenge)));
+$('#challenge-x').addEventListener('click', () => {
+  challenge = null;
+  history.replaceState(null, '', location.pathname + location.search);
+  renderTitle();
+});
+$('#missions-btn').addEventListener('click', openMissions);
+$('#missions-close').addEventListener('click', () => show('title'));
+$('#garage-btn').addEventListener('click', openGarage);
+$('#garage-close').addEventListener('click', closeGarage);
 $('#settings-btn').addEventListener('click', openSettings);
-$('#settings-close').addEventListener('click', () => show('title'));
+$('#settings-close').addEventListener('click', () => {
+  renderTitle();
+  show('title');
+});
 $('#pause-btn').addEventListener('click', pause);
 $('#resume').addEventListener('click', resume);
 $('#restart').addEventListener('click', () => {
   audio.stopSong(false);
   clock.resume();
   clearPowers();
-  startRun(!!daily);
+  settleRun();
+  retry();
 });
-$('#quit').addEventListener('click', () => {
-  audio.stopSong(false);
-  clock.resume();
-  clearPowers();
-  startAttract();
-});
-$('#retry').addEventListener('click', () => startRun(!!daily));
+$('#quit').addEventListener('click', quitToMenu);
+$('#retry').addEventListener('click', retry);
 $('#menu').addEventListener('click', startAttract);
-$('#share').addEventListener('click', async () => {
-  const text = `NEON GRID RUNNER — ${fmt(sim.score)} pts · ${fmt(sim.distance)} m · Sector ${sim.sector + 1}${daily ? ` · Daily ${daily}` : ''}\n${location.href.split('#')[0]}`;
-  try {
-    await navigator.clipboard.writeText(text);
-    $('#share').textContent = 'Copied!';
-    setTimeout(() => ($('#share').textContent = 'Share score'), 1500);
-  } catch {
-    window.prompt('Copy your score:', text);
-  }
+$('#share').addEventListener('click', () => {
+  const link: GhostLink = {
+    seed: sim.seed,
+    log: encodeLog(sim.log),
+    score: sim.score,
+    name: save.settings.callsign || 'Runner',
+    ship: save.garage.loadout.ship,
+    day: mode.kind === 'daily' ? mode.key : undefined,
+  };
+  const url = `${location.href.split('#')[0]}#ghost=${encodeGhostLink(link)}`;
+  void copyText(`Race my ghost in NEON GRID RUNNER: ${fmt(sim.score)} pts, ${fmt(sim.distance)} m\n${url}`, $('#share'), 'Share ghost');
 });
 $('#mute-btn').addEventListener('click', () => {
   save.settings.muted = !save.settings.muted;
@@ -474,13 +816,17 @@ for (const id of ['music', 'sfx'] as const) {
     applySettings();
   });
 }
-for (const id of ['shake', 'fps'] as const) {
+for (const id of ['shake', 'fps', 'ghosts'] as const) {
   $(`#set-${id}`).addEventListener('change', (e) => {
     save.settings[id] = (e.target as HTMLInputElement).checked;
     persist();
     applySettings();
   });
 }
+$('#set-callsign').addEventListener('input', (e) => {
+  save.settings.callsign = (e.target as HTMLInputElement).value.replace(/[^\p{L}\p{N} _-]/gu, '').slice(0, 16);
+  persist();
+});
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) pause();
@@ -488,13 +834,16 @@ document.addEventListener('visibilitychange', () => {
 
 if (matchMedia('(pointer: coarse)').matches) document.body.classList.add('touch');
 
-// Dev-only handle for debugging in the browser console (`__ngr.autopilot(true)` lets the bot play a real run).
-let devAutopilot = false;
-let devBot: Bot | null = null;
+// A shared ghost link opens a challenge card on the title screen.
+const hash = location.hash.slice(1);
+if (hash.startsWith('ghost=')) challenge = decodeGhostLink(hash.slice(6));
+
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__ngr = {
     view,
     sim: () => sim,
+    ghost: () => ghost,
+    save,
     autopilot: (on: boolean) => {
       devAutopilot = on;
       devBot = null;
@@ -502,6 +851,7 @@ if (import.meta.env.DEV) {
   };
 }
 
+view.setLoadout(save.garage.loadout);
 applySettings();
 startAttract();
 requestAnimationFrame(frame);

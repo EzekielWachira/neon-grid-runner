@@ -36,6 +36,16 @@ export type SimEvent =
   | { type: 'mult'; mult: number }
   | { type: 'sector'; sector: number };
 
+/** The simulation advances in fixed ticks so a recorded run replays identically at any frame rate. */
+export const SIM_STEP = 1 / 240;
+
+export type InputCode = 'L' | 'R' | 'J' | 'S';
+/** One player input, stamped with the tick it was applied on. */
+export interface InputEntry {
+  tick: number;
+  a: InputCode;
+}
+
 /** How recently a dodge must start to count as a near miss. */
 const LATE_DODGE = 0.38;
 const COMBO_WINDOW = 2.6;
@@ -67,6 +77,17 @@ export class Sim {
 
   events: SimEvent[] = [];
 
+  /** Ticks simulated so far; `t` is always exactly ticks * SIM_STEP. */
+  ticks = 0;
+  /** Every input this run, for ghosts and replays. */
+  readonly log: InputEntry[] = [];
+  /** Per-run counters for missions. */
+  stats = { jumps: 0, slides: 0, powers: 0, smashes: 0, closeMoves: 0, magnets: 0, overdrives: 0, shields: 0 };
+  /** Distance at the first power-up pickup (null until one is taken). */
+  firstPowerAt: number | null = null;
+
+  private replay: InputEntry[] | null;
+  private replayIdx = 0;
   private prevT = 0;
   private comboTimer = 0;
   private jumpBuffer = 0;
@@ -76,7 +97,12 @@ export class Sim {
   private slideAt = -9;
   private lastMult = 1;
 
-  constructor(seed: number) {
+  readonly seed: number;
+
+  /** With `replay`, the sim plays back those inputs and ignores live ones (a ghost). */
+  constructor(seed: number, replay: InputEntry[] | null = null) {
+    this.seed = seed;
+    this.replay = replay;
     this.track = new Track(seed);
     this.track.generateUntil(VIEW_DIST / SPEED_START + 2);
   }
@@ -92,7 +118,33 @@ export class Sim {
   // ---------------------------------------------------------------- input
 
   move(dir: -1 | 1) {
+    this.input(dir < 0 ? 'L' : 'R');
+  }
+
+  jump() {
+    this.input('J');
+  }
+
+  slide() {
+    this.input('S');
+  }
+
+  get isGhost() {
+    return this.replay !== null;
+  }
+
+  private input(a: InputCode, fromReplay = false) {
     if (!this.alive) return;
+    if (!fromReplay) {
+      if (this.replay) return;
+      this.log.push({ tick: this.ticks, a });
+    }
+    if (a === 'L' || a === 'R') this.doMove(a === 'L' ? -1 : 1);
+    else if (a === 'J') this.jumpBuffer = INPUT_BUFFER;
+    else this.doSlide();
+  }
+
+  private doMove(dir: -1 | 1) {
     const next = Math.min(LANES - 1, Math.max(0, this.lane + dir));
     if (next === this.lane) return;
     this.lane = next;
@@ -100,12 +152,7 @@ export class Sim {
     this.events.push({ type: 'lane', dir });
   }
 
-  jump() {
-    if (this.alive) this.jumpBuffer = INPUT_BUFFER;
-  }
-
-  slide() {
-    if (!this.alive) return;
+  private doSlide() {
     // In the air this becomes a fast-fall, and the slide starts on landing.
     this.slideBuffer = this.grounded ? INPUT_BUFFER : 0.6;
     if (!this.grounded) this.vy = Math.min(this.vy, FAST_FALL_VY);
@@ -113,11 +160,23 @@ export class Sim {
 
   // ---------------------------------------------------------------- step
 
-  /** Advances to song time `t`. */
+  /** Advances (in fixed ticks) up to song time `t`. */
   step(t: number) {
-    const dt = Math.min(0.1, t - this.t);
-    if (dt <= 0 || !this.alive) return;
+    while (this.alive && (this.ticks + 1) * SIM_STEP <= t + 1e-9) {
+      if (this.replay) {
+        while (this.replayIdx < this.replay.length && this.replay[this.replayIdx].tick <= this.ticks) {
+          this.input(this.replay[this.replayIdx++].a, true);
+        }
+      }
+      this.tick();
+    }
+  }
+
+  private tick() {
+    const dt = SIM_STEP;
     this.prevT = this.t;
+    this.ticks++;
+    const t = this.ticks * SIM_STEP;
     this.t = t;
     this.speed = speedAt(t);
     this.distance += this.speed * dt;
@@ -157,12 +216,14 @@ export class Sim {
       this.grounded = false;
       this.vy = JUMP_VY;
       this.jumpAt = this.t;
+      this.stats.jumps++;
       this.events.push({ type: 'jump' });
     }
     if (this.slideBuffer > 0 && this.grounded) {
       this.slideBuffer = 0;
       this.slideTimer = SLIDE_TIME;
       this.slideAt = this.t;
+      this.stats.slides++;
       this.events.push({ type: 'slide' });
     }
 
@@ -238,6 +299,7 @@ export class Sim {
     }
     if (!style) return;
     this.nearMisses++;
+    if (style !== 'side') this.stats.closeMoves++;
     this.bumpCombo();
     const bonus = 50 * this.mult;
     this.score += bonus;
@@ -247,6 +309,7 @@ export class Sim {
   private collide(o: Obstacle) {
     if (this.powers.overdrive > 0) {
       o.done = 'smashed';
+      this.stats.smashes++;
       this.score += 25 * this.mult;
       this.events.push({ type: 'smash', obstacle: o });
     } else if (this.invuln > 0) {
@@ -288,6 +351,9 @@ export class Sim {
         this.events.push({ type: 'orb', pickup: p, combo: this.combo });
       } else {
         this.powers[p.kind] = POWER_TIME[p.kind];
+        this.stats.powers++;
+        this.stats[p.kind === 'shield' ? 'shields' : p.kind === 'magnet' ? 'magnets' : 'overdrives']++;
+        this.firstPowerAt ??= this.distance;
         this.score += 100;
         this.events.push({ type: 'power', pickup: p });
       }

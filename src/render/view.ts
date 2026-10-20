@@ -13,9 +13,10 @@ import { World } from './world.ts';
 import { Ship } from './ship.ts';
 import { Things } from './things.ts';
 import { Fx } from './fx.ts';
+import type { Loadout, ShipId } from '../meta/garage.ts';
 
 export type Quality = 'auto' | 'high' | 'medium' | 'low';
-export type ViewMode = 'title' | 'run' | 'dying' | 'paused';
+export type ViewMode = 'title' | 'run' | 'dying' | 'paused' | 'garage';
 
 const QUALITY = {
   high: { ratio: 2, bloom: 1 },
@@ -35,6 +36,9 @@ export class View {
   private finish: ShaderPass;
   private world = new World();
   private ship = new Ship();
+  private ghostShip = new Ship({ ghost: true });
+  private ghostWasAlive = true;
+  private sparkPos = [new THREE.Vector3(), new THREE.Vector3()];
   private things = new Things();
   private fx = new Fx();
 
@@ -54,6 +58,8 @@ export class View {
   private offset = 0;
   private tmp = new THREE.Vector3();
   shakeEnabled = true;
+  /** Screen point (px) where the garage preview should centre the ship, clear of the UI panel. */
+  garageFocus: { x: number; y: number } | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false });
@@ -62,6 +68,8 @@ export class View {
     this.scene.fog = new THREE.Fog(0x000000, 40, 210);
     this.scene.add(this.world.group, this.things.group, this.ship.group, this.fx.group);
     for (const t of this.ship.trails) this.scene.add(t.mesh);
+    this.scene.add(this.ghostShip.group, this.ghostShip.trails[0].mesh);
+    this.ghostShip.group.visible = false;
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
@@ -126,6 +134,20 @@ export class View {
 
   get pixelRatio() {
     return this.ratio;
+  }
+
+  setLoadout(l: Loadout) {
+    this.ship.setLoadout(l);
+  }
+
+  /** Shows a ghost flying a recorded run (its hull from the recording), or hides it with null. */
+  setGhostShip(ship: ShipId | null) {
+    if (ship) this.ghostShip.setLoadout({ ship, trail: 'twin', color: 'sector' });
+    // reset() makes the ship visible, so it has to come before hiding.
+    this.ghostShip.reset();
+    this.ghostShip.group.visible = ship !== null;
+    this.ghostShip.trails[0].mesh.visible = ship !== null;
+    this.ghostWasAlive = true;
   }
 
   reset() {
@@ -223,14 +245,15 @@ export class View {
 
   // ---------------------------------------------------------------- frame
 
-  render(sim: Sim, dt: number, mode: ViewMode, time: number) {
+  render(sim: Sim, dt: number, mode: ViewMode, time: number, ghost: Sim | null = null) {
     this.adapt(dt);
     const p = this.palette;
     p.update(dt);
     const c = p.c;
 
-    const moving = mode === 'run' || mode === 'title';
-    const flow = moving ? sim.speed * dt : 0;
+    const garage = mode === 'garage';
+    const moving = mode === 'run' || mode === 'title' || garage;
+    const flow = moving ? sim.speed * dt * (garage ? 0.3 : 1) : 0;
     this.offset += flow;
 
     const beat = sim.t / BEAT;
@@ -241,8 +264,24 @@ export class View {
 
     this.world.update(p, this.offset, dt, sim.speed, pulse, phase, moving ? Math.max(od ? 1 : 0, (speedK - 0.35) * 1.5) : 0, time);
     (this.scene.fog as THREE.Fog).color.copy(fogUniforms.uFog.value);
-    this.ship.update(sim, p, dt, time, flow, mode !== 'dying');
+    this.ship.update(sim, p, dt, time, flow, mode !== 'dying', pulse, garage);
+    this.things.group.visible = !garage;
     this.things.update(sim, p, time, pulse, this.ship.group.position);
+
+    if (ghost && (mode === 'run' || mode === 'dying' || mode === 'paused')) {
+      this.ghostShip.update(ghost, p, dt, time, flow, ghost.alive);
+      if (this.ghostWasAlive && !ghost.alive) this.fx.burst(this.ghostShip.group.position.clone(), new THREE.Color(0.8, 0.9, 1), 50, 9, 0.6, 0.9);
+      this.ghostWasAlive = ghost.alive;
+    }
+
+    // Stardust trail: glitter shed from the emitters.
+    if (this.ship.loadout.trail === 'sparkle' && moving && this.ship.group.visible) {
+      const [a, b] = this.ship.emitters(this.sparkPos);
+      for (const at of [a, b]) {
+        const col = new THREE.Color().setHSL(Math.random(), 0.9, 0.7);
+        this.fx.spawn(at.x, at.y, at.z, (Math.random() - 0.5) * 1.5, (Math.random() - 0.5) * 1.5, 3, 0.6, 0.35, col);
+      }
+    }
 
     // Belly sparks while sliding.
     if (sim.sliding && mode === 'run') {
@@ -260,7 +299,13 @@ export class View {
     let pos: THREE.Vector3;
     let look: THREE.Vector3;
     let fov: number;
-    if (mode === 'title') {
+    if (garage) {
+      // Swing across the front of the parked ship; trails stream away behind it, out of the lens.
+      const a = Math.sin(time * 0.25) * 1.05;
+      pos = this.tmp.set(Math.sin(a) * 4, 1.5 + Math.sin(time * 0.21) * 0.25, -Math.cos(a) * 4);
+      look = new THREE.Vector3(0, 0.75, 0);
+      fov = 52;
+    } else if (mode === 'title') {
       // Slow cinematic sweep beside the autopilot.
       pos = this.tmp.set(Math.sin(time * 0.17) * 7 + sim.x * 0.3, 1.9 + Math.sin(time * 0.23) * 0.6, 7.5 + Math.cos(time * 0.17) * 1.5);
       look = new THREE.Vector3(sim.x * 0.5, 1.4, -20);
@@ -275,13 +320,23 @@ export class View {
     this.camLook.lerp(look, k);
     this.fovKick *= Math.exp(-dt * 5);
     this.camera.fov += (fov + this.fovKick - this.camera.fov) * Math.min(1, dt * 6);
+    // In the garage, shift the image so the ship sits beside the panel (left on wide screens,
+    // above it on phones where the panel docks at the bottom).
+    if (garage) {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const f = this.garageFocus ?? { x: w / 2, y: h / 2 };
+      this.camera.setViewOffset(w, h, w / 2 - f.x, h / 2 - f.y, w, h);
+    } else if (this.camera.view?.enabled) {
+      this.camera.clearViewOffset();
+    }
     this.camera.updateProjectionMatrix();
 
     this.shake *= Math.exp(-dt * 5);
     const sh = this.shake * 0.35;
     this.camera.position.set(this.camPos.x + (Math.random() - 0.5) * sh, this.camPos.y + (Math.random() - 0.5) * sh, this.camPos.z);
     this.camera.lookAt(this.camLook);
-    this.camera.rotateZ(mode === 'title' ? 0 : -sim.bank * 0.07);
+    this.camera.rotateZ(mode === 'title' || garage ? 0 : -sim.bank * 0.07);
 
     // Post.
     this.flash *= Math.exp(-dt * 4.5);
@@ -298,7 +353,17 @@ export class View {
 
   /** For UI that wants the ship's screen position (e.g. score popups). */
   shipScreen(out = new THREE.Vector2()) {
-    this.tmp.copy(this.ship.group.position).project(this.camera);
+    return this.toScreen(this.ship.group.position, out);
+  }
+
+  /** Screen position of the ghost (for its name tag), or null when it isn't shown. */
+  ghostScreen(out = new THREE.Vector2()) {
+    if (!this.ghostShip.group.visible) return null;
+    return this.toScreen(this.tmp.copy(this.ghostShip.group.position).setY(this.ghostShip.group.position.y + 1.1), out);
+  }
+
+  private toScreen(v: THREE.Vector3, out: THREE.Vector2) {
+    this.tmp.copy(v).project(this.camera);
     return out.set((this.tmp.x * 0.5 + 0.5) * window.innerWidth, (-this.tmp.y * 0.5 + 0.5) * window.innerHeight);
   }
 }

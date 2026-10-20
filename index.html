@@ -15,15 +15,33 @@
     <canvas id="c"></canvas>
 
     <section id="title" class="screen">
+      <div class="chips">
+        <span id="rank-chip" class="chip rank"></span>
+        <span id="credit-chip" class="chip credits"></span>
+      </div>
       <div class="title-wrap">
         <h1 class="logo">
           <span class="l1">Neon</span>
           <span class="l2">Grid Runner</span>
         </h1>
         <p class="tag">Ride the beat. Don’t touch the light.</p>
+        <div id="challenge" class="challenge" hidden>
+          <div class="ch-text">
+            <span class="ch-label">Ghost challenge</span>
+            <b id="challenge-name"></b>
+            <span id="challenge-score"></span>
+          </div>
+          <button id="challenge-go" class="btn primary small">Race</button>
+          <button id="challenge-x" class="icon" aria-label="Dismiss challenge"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
+        </div>
         <div class="menu">
           <button id="play" class="btn primary">Run</button>
           <button id="daily" class="btn">Daily run <small id="daily-best"></small></button>
+          <button id="race" class="btn" hidden>Ghost race <small id="race-sub"></small></button>
+        </div>
+        <div class="sub-menu">
+          <button id="missions-btn" class="btn ghost">Missions</button>
+          <button id="garage-btn" class="btn ghost">Garage</button>
           <button id="settings-btn" class="btn ghost">Settings</button>
         </div>
         <p class="best">Best <b id="best">0</b></p>
@@ -36,14 +54,17 @@
 
     <section id="hud" class="screen">
       <div class="hud-top">
-        <div class="score-box">
-          <div id="score">0</div>
-          <div id="mult" class="mult">x1</div>
+        <div class="score-col">
+          <div class="score-box">
+            <div id="score">0</div>
+            <div id="mult" class="mult">x1</div>
+          </div>
+          <div id="ghost-diff" class="ghost-diff"></div>
         </div>
         <div class="center-info">
           <div id="dist">0 m</div>
           <div id="sector-label">Sector 1</div>
-          <div class="daily-tag">Daily run</div>
+          <div id="mode-tag" class="daily-tag"></div>
         </div>
         <div class="hud-btns">
           <button id="mute-btn" class="icon" aria-label="Mute">
@@ -59,6 +80,8 @@
       <div id="combo" class="combo"></div>
       <div id="popups"></div>
       <div id="countdown" class="countdown"></div>
+      <div id="ghost-tag" class="ghost-tag"></div>
+      <div id="toast" class="toast"></div>
       <div id="banner" class="banner"></div>
     </section>
 
@@ -79,6 +102,7 @@
         <h2 class="glitch" data-text="Signal lost">Signal lost</h2>
         <div id="over-badge" class="badge"></div>
         <div id="over-score" class="big-score">0</div>
+        <div id="over-ghost" class="over-ghost"></div>
         <div class="stats">
           <div><span>Distance</span><b id="stat-dist"></b></div>
           <div><span>Time</span><b id="stat-time"></b></div>
@@ -87,9 +111,10 @@
           <div><span>Best combo</span><b id="stat-combo"></b></div>
           <div><span>Sector</span><b id="stat-sector"></b></div>
         </div>
+        <div id="over-rewards" class="rewards"></div>
         <div class="menu row">
           <button id="retry" class="btn primary">Run again</button>
-          <button id="share" class="btn">Share score</button>
+          <button id="share" class="btn">Share ghost</button>
           <button id="menu" class="btn ghost">Menu</button>
         </div>
       </div>
@@ -110,7 +135,36 @@
         <label class="row-set"><span>Sound effects</span><input id="set-sfx" type="range" min="0" max="1" step="0.05" /></label>
         <label class="row-set"><span>Screen shake</span><input id="set-shake" type="checkbox" class="switch" /></label>
         <label class="row-set"><span>Show FPS</span><input id="set-fps" type="checkbox" class="switch" /></label>
+        <label class="row-set"><span>Race my daily ghost</span><input id="set-ghosts" type="checkbox" class="switch" /></label>
+        <label class="row-set"><span>Callsign <small>shown on your ghost links</small></span><input id="set-callsign" type="text" maxlength="16" spellcheck="false" autocomplete="off" /></label>
         <button id="settings-close" class="btn primary">Done</button>
+      </div>
+    </section>
+
+    <section id="missions" class="screen modal">
+      <div class="panel missions-panel">
+        <h2>Missions</h2>
+        <div class="rank-line"><b id="ms-rank"></b><span id="ms-next-label"></span></div>
+        <i class="rank-bar"><b id="ms-next"></b></i>
+        <div id="ms-list" class="ms-list"></div>
+        <p class="ms-note">Complete missions to earn credits and rank up. Spend credits in the garage.</p>
+        <button id="missions-close" class="btn primary">Done</button>
+      </div>
+    </section>
+
+    <section id="garage" class="screen garage">
+      <div class="garage-panel">
+        <div class="gar-head">
+          <h2>Garage</h2>
+          <span id="gar-credits" class="chip credits"></span>
+        </div>
+        <div class="gar-tabs">
+          <button class="gar-tab btn ghost" data-tab="ship">Ships</button>
+          <button class="gar-tab btn ghost" data-tab="trail">Trails</button>
+          <button class="gar-tab btn ghost" data-tab="color">Colours</button>
+        </div>
+        <div id="gar-items" class="gar-items"></div>
+        <button id="garage-close" class="btn primary">Done</button>
       </div>
     </section>
 

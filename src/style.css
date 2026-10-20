@@ -769,3 +769,420 @@ input[type='range'] {
     margin: 12px 0 16px;
   }
 }
+
+/* ================================================================ ghosts, missions, garage */
+
+.chips {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  left: max(16px, env(safe-area-inset-left));
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.chip {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  background: rgba(8, 2, 22, 0.6);
+  font: 600 12px 'Chakra Petch', sans-serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  backdrop-filter: blur(6px);
+}
+.chip.rank {
+  color: var(--cyan);
+}
+.chip.credits {
+  color: var(--gold);
+}
+.sub-menu {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+  margin-top: 8px;
+}
+.sub-menu .btn {
+  min-width: 0;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+.btn.small {
+  min-width: 0;
+  padding: 10px 18px;
+  font-size: 13px;
+}
+[hidden] {
+  display: none !important;
+}
+
+.challenge {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: -10px auto 18px;
+  width: min(420px, 100%);
+  padding: 10px 10px 10px 16px;
+  border: 1px solid rgba(255, 225, 77, 0.5);
+  background: rgba(30, 20, 4, 0.55);
+  backdrop-filter: blur(8px);
+  text-align: left;
+  animation: bump 0.5s ease;
+}
+/* Only clickable while its screen is showing, or it would swallow touches during a run. */
+.screen.visible .challenge,
+.screen.visible .gar-item {
+  pointer-events: auto;
+}
+.ch-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ch-label {
+  font-size: 11px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+.ch-text b {
+  font: 700 16px 'Orbitron', sans-serif;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ch-text span:last-child {
+  color: var(--muted);
+  font-size: 13px;
+}
+.challenge .icon {
+  width: 34px;
+  height: 34px;
+}
+
+/* HUD: ghost */
+.score-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ghost-diff {
+  display: none;
+  font: 600 14px 'Chakra Petch', sans-serif;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+}
+#hud.has-ghost .ghost-diff {
+  display: block;
+}
+.ghost-diff.ahead {
+  color: #7dff9a;
+  text-shadow: 0 0 10px rgba(125, 255, 154, 0.6);
+}
+.ghost-diff.behind {
+  color: #ff8a9a;
+  text-shadow: 0 0 10px rgba(255, 60, 90, 0.6);
+}
+.ghost-tag {
+  position: fixed;
+  left: 0;
+  top: 0;
+  display: none;
+  padding: 2px 8px;
+  border: 1px solid rgba(220, 230, 255, 0.5);
+  background: rgba(8, 2, 22, 0.55);
+  font: 600 11px 'Chakra Petch', sans-serif;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: #e4ecff;
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+#hud.has-ghost .ghost-tag {
+  display: block;
+}
+.toast {
+  position: absolute;
+  top: calc(max(14px, env(safe-area-inset-top)) + 70px);
+  left: 50%;
+  transform: translate(-50%, -10px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 18px;
+  border: 1px solid rgba(255, 225, 77, 0.55);
+  background: rgba(20, 12, 2, 0.7);
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  text-align: center;
+  max-width: calc(100% - 32px);
+}
+.toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.toast b {
+  font: 800 13px 'Orbitron', sans-serif;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+.toast span {
+  font-size: 14px;
+}
+
+/* Game over additions */
+.over-ghost {
+  margin-top: 6px;
+  font: 600 15px 'Chakra Petch', sans-serif;
+  letter-spacing: 0.06em;
+}
+.over-ghost.win {
+  color: #7dff9a;
+}
+.over-ghost.lose {
+  color: #ff8a9a;
+}
+.rewards {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: -8px 0 20px;
+  font-size: 14px;
+}
+.reward-credits {
+  font: 700 16px 'Chakra Petch', sans-serif;
+  color: var(--gold);
+}
+.reward-mission {
+  color: #7dff9a;
+}
+.reward-rank {
+  font: 800 14px 'Orbitron', sans-serif;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--cyan);
+  text-shadow: 0 0 12px rgba(34, 230, 255, 0.7);
+}
+
+/* Settings: callsign */
+.row-set small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+.row-set input[type='text'] {
+  width: 46%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #12052a;
+  color: var(--ink);
+  font: inherit;
+}
+
+/* Missions */
+.missions-panel {
+  text-align: left;
+}
+.missions-panel h2 {
+  text-align: center;
+}
+.rank-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.rank-line b {
+  font: 800 16px 'Orbitron', sans-serif;
+  letter-spacing: 0.08em;
+  color: var(--cyan);
+}
+.rank-line span {
+  font-size: 13px;
+  color: var(--muted);
+}
+.rank-bar,
+.mission i {
+  display: block;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.rank-bar b,
+.mission i b {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--pink), var(--cyan));
+}
+.ms-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 18px 0 12px;
+}
+.mission {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+.mission-text {
+  font-size: 15px;
+  font-weight: 600;
+}
+.mission-meta {
+  margin: 4px 0 8px;
+  font-size: 12px;
+  color: var(--gold);
+  letter-spacing: 0.06em;
+}
+.ms-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.missions-panel .btn {
+  display: block;
+  margin: 18px auto 0;
+}
+
+/* Garage: a side panel over the 3D preview */
+.garage {
+  display: flex;
+  justify-content: flex-end;
+  align-items: stretch;
+  padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) 14px;
+}
+.garage.visible .garage-panel {
+  pointer-events: auto;
+}
+.garage-panel {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  clip-path: polygon(18px 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%, 0 18px);
+}
+.gar-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.gar-head h2 {
+  margin: 0;
+  font: 900 26px 'Orbitron', sans-serif;
+  font-style: italic;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.gar-tabs {
+  display: flex;
+  gap: 4px;
+}
+.gar-tab {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 6px;
+  font-size: 12px;
+}
+.gar-tab.on {
+  color: var(--ink);
+  border-color: rgba(34, 230, 255, 0.45);
+  background: rgba(34, 230, 255, 0.12);
+}
+.gar-items {
+  flex: 1;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  align-content: start;
+}
+.gar-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--ink);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.gar-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+.gar-item.equipped {
+  border-color: var(--cyan);
+  box-shadow: 0 0 18px rgba(34, 230, 255, 0.25) inset;
+}
+.gar-item.locked {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.gi-name {
+  font: 700 14px 'Orbitron', sans-serif;
+  letter-spacing: 0.06em;
+}
+.gi-desc {
+  font-size: 12px;
+  color: var(--muted);
+  min-height: 1em;
+}
+.gi-state {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--gold);
+}
+.gar-item.owned .gi-state {
+  color: var(--cyan);
+}
+.gi-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  margin-bottom: 4px;
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.25);
+}
+
+@media (max-width: 640px) {
+  .garage {
+    align-items: flex-end;
+    padding-left: 10px;
+  }
+  .garage-panel {
+    width: 100%;
+    max-height: 58vh;
+  }
+  .chips .chip {
+    font-size: 11px;
+  }
+}
+@media (max-height: 520px) {
+  .sub-menu {
+    margin-top: 4px;
+  }
+  .challenge {
+    margin: 0 auto 8px;
+  }
+  .garage-panel {
+    width: min(380px, 60vw);
+    padding: 14px;
+  }
+}

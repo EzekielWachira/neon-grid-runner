@@ -195,7 +195,8 @@ export function railMaterial() {
       void main() {
         float d = fract((vWorld.z - uOffset * 1.0) / 12.0);
         float dash = smoothstep(0.0, 0.08, d) * (1.0 - smoothstep(0.5, 0.6, d));
-        vec3 col = uColor * (0.6 + dash * 2.4);
+        // Fade right next to the camera, where a rail would otherwise bloom across the screen.
+        vec3 col = uColor * (0.6 + dash * 2.4) * smoothstep(1.5, 9.0, vDepth);
         float fog = smoothstep(uFogNear, uFogFar, vDepth);
         gl_FragColor = vec4(mix(col, uFog, fog), 1.0);
       }
@@ -238,7 +239,7 @@ export function particleMaterial() {
   });
 }
 
-/** Ribbon trail: per-vertex alpha, additive. */
+/** Ribbon trail: per-vertex alpha and tint, additive. */
 export function trailMaterial(color: THREE.Color) {
   return new THREE.ShaderMaterial({
     uniforms: { uColor: { value: color } },
@@ -248,13 +249,20 @@ export function trailMaterial(color: THREE.Color) {
     blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */ `
       attribute float aAlpha;
+      attribute vec3 aColor;
       varying float vAlpha;
-      void main() { vAlpha = aAlpha; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+      varying vec3 vTint;
+      void main() {
+        vAlpha = aAlpha;
+        vTint = aColor;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
     `,
     fragmentShader: /* glsl */ `
       varying float vAlpha;
+      varying vec3 vTint;
       uniform vec3 uColor;
-      void main() { gl_FragColor = vec4(uColor * vAlpha * 2.2, 1.0); }
+      void main() { gl_FragColor = vec4(uColor * vTint * vAlpha * 2.2, 1.0); }
     `,
   });
 }
