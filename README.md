@@ -11,6 +11,13 @@ A synthwave 3D endless runner that moves to the beat. Steer across five lanes, j
 - **Power-ups:** shield (absorbs one hit), magnet (pulls in orbs), overdrive (smash through everything, double score)
 - **Scoring:** orbs and near misses build a combo; every 8 raises the multiplier (up to ×8). Late dodges, close jumps and close slides count as near misses.
 - **Sectors:** every 24 bars the palette changes (Synthwave, Outrun, Toxic, Inferno, Glacier, Vapor), the music adds layers and the track gets denser
+- **Set pieces** that come round in every sector, on fixed beats so the music, track and visuals all agree:
+  - **The Sentinel** (from Sector 2): a boss at the horizon that fires a laser wall on every beat for 16 beats, each with one gap, plus low sweeps to jump. A snare-roll riser announces it, the music drops into a siren and sub bass, and surviving pays a bonus as it explodes.
+  - **Tunnels** (from Sector 2): the camera tucks in, the music muffles, the sun dims, and the rows only ever need slides.
+  - **Gravity flips** (from Sector 3, inside tunnels): the view rolls over so you ride the ceiling, and live controls follow the screen.
+- **Ramps** launch you over a full-width wall of blocks, with an arc of orbs along the flight path. **Boost pads** double your score for 2.5 s.
+- **Practice:** start from any sector you've reached, optionally at half speed (music off), with checkpoints before each tunnel and Sentinel. Practice never counts for scores, missions, mastery or badges.
+- **Badges:** 31 achievements (run feats, one per ship, and long-term goals), worth 100 credits each, on a badge wall and in the ship gallery.
 - **Daily run:** the same seeded track and the same featured ship for everyone each day (lent to you if you haven't unlocked it), with its own best score, a play streak that pays bonus credits, and a shareable result card: a 4:5 image of your run plus a text version with a ghost link
 - **Ghost racing:** the simulation runs in fixed 1/240 s ticks and records every input, so a run replays exactly from its seed and input log (about 1 KB for five minutes). Race your best run in *Ghost race*, see your earlier best on today's daily run, or share a ghost link so friends race your exact run. A live HUD readout shows how far ahead or behind you are.
 - **Missions:** three active challenges at a time (single-run and cumulative). Completing them earns credits and raises your rank; each is replaced by a harder one.
@@ -43,7 +50,7 @@ npm run dev
 | --- | --- |
 | `npm run dev` | Start the Vite dev server |
 | `npm run build` | Type-check and build to `dist/` |
-| `npm run verify` | Headless autopilot runs that prove generated tracks are survivable in every ship, and that recorded runs replay exactly |
+| `npm run verify` | Headless autopilot runs that prove generated tracks (set pieces included) are survivable in every ship and from every practice checkpoint, and that recorded runs replay exactly |
 
 ## Controls
 
@@ -53,6 +60,8 @@ npm run dev
 | Jump | `↑` / `W` / `Space` | Swipe up or tap | A |
 | Slide (fast-fall in the air) | `↓` / `S` | Swipe down | B |
 | Ship ability (Interceptor, Phantom) | `E` / `F` / `Shift` | Ability button | X / Y / bumpers |
+
+During a gravity flip, steering and jump/slide follow the screen (so they swap). Settings has vibration (gamepad rumble; phone buzz on Android), swipe sensitivity and a one-handed **tap zones** layout: tap the left or right third to steer, the middle to jump.
 | Pause | `Esc` / `P` | Pause button | Start |
 
 In the replay theatre: `Space` play/pause, `←`/`→` seek 5 s, `C` camera, `H` photo mode, `Esc` exit.
@@ -65,7 +74,8 @@ In the replay theatre: `Space` play/pause, `←`/`→` seek 5 s, `C` camera, `H`
 | `src/audio/engine.ts` | Synth soundtrack, sidechain, sound effects and the master clock |
 | `src/render/` | Three.js scene: shaders, curved-world bend, environment, ship, obstacles, particles, cameras and post-processing |
 | `src/core/ships.ts` | Ship classes: the rules each ship changes |
-| `src/meta/` | Missions, garage catalogue, gallery and mastery, daily extras (featured ship, streaks, result card) and ghost-link encoding |
+| `src/core/zones.ts` | Set-piece timing (tunnels, flips, the Sentinel) and practice checkpoints |
+| `src/meta/` | Missions, achievements, garage catalogue, gallery and mastery, daily extras (featured ship, streaks, result card) and ghost-link encoding |
 | `src/main.ts` | Game states, HUD, menus, ghosts, saving |
 | `scripts/verify-runs.ts` | Headless survivability check (runs in CI before every deploy) |
 
@@ -75,7 +85,7 @@ In the replay theatre: `Space` play/pause, `←`/`→` seek 5 s, `C` camera, `H`
 
 ## Ghost links
 
-`…/#ghost=<data>` opens a challenge card on the title screen. The data carries the seed, the input log, the score, the runner's callsign (set in Settings) and their ship. You race in the same ship, lent to you if you don't own it, because the ship's rules are part of the simulation. Links from before ship classes (`v: 1`) replay with Delta rules, which are exactly the old rules.
+`…/#ghost=<data>` opens a challenge card on the title screen. The data carries the seed, the input log, the score, the runner's callsign (set in Settings) and their ship. You race in the same ship, lent to you if you don't own it, because the ship's rules are part of the simulation. Links from before ship classes (`v: 1`) replay with Delta rules, which are exactly the old rules. The link also carries the track version (`k`): links without one were recorded before set pieces and replay, and race, on the original track.
 
 ## License
 

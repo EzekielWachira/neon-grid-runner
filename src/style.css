@@ -1649,3 +1649,126 @@ body.touch .ability {
 .card-panel .menu.row {
   justify-content: center;
 }
+
+/* ================================================================ set pieces, practice, badges */
+
+.power-bar.boost span {
+  color: var(--cyan);
+}
+.power-bar.boost b {
+  background: linear-gradient(90deg, var(--cyan), #b9f6ff);
+  box-shadow: 0 0 10px var(--cyan);
+}
+.reward-badge {
+  color: var(--gold);
+  font-weight: 600;
+}
+.gd-badge {
+  margin-top: 6px !important;
+  font-size: 12px !important;
+  color: var(--muted);
+}
+.gd-badge.earned {
+  color: var(--gold);
+}
+.sub-menu {
+  flex-wrap: wrap;
+}
+
+.pr-sectors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 16px 0 10px;
+}
+.pr-sector {
+  min-width: 44px;
+  padding: 10px 0;
+}
+.pr-sector.on {
+  color: var(--ink);
+  border-color: rgba(34, 230, 255, 0.5);
+  background: rgba(34, 230, 255, 0.16);
+}
+.pr-name {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.pr-name b {
+  font: 700 14px 'Orbitron', sans-serif;
+  letter-spacing: 0.06em;
+  color: var(--cyan);
+}
+.pr-name span {
+  color: var(--muted);
+}
+#practice .row-set {
+  margin-bottom: 8px;
+}
+#practice .menu.row {
+  justify-content: center;
+  margin-top: 14px;
+}
+
+.badges-panel {
+  width: min(640px, 100%);
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+}
+.bd-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+  margin: 14px 0 4px;
+}
+.badge-card {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  opacity: 0.6;
+}
+.badge-card.earned {
+  opacity: 1;
+  border-color: rgba(255, 225, 77, 0.5);
+  background: rgba(255, 225, 77, 0.06);
+}
+.badge-card i {
+  font-style: normal;
+  font-size: 20px;
+  line-height: 1;
+  filter: grayscale(1);
+}
+.badge-card.earned i {
+  filter: none;
+}
+.badge-card div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.badge-card b {
+  font: 700 13px 'Orbitron', sans-serif;
+  letter-spacing: 0.05em;
+}
+.badge-card span {
+  font-size: 12px;
+  color: var(--muted);
+}
+.badge-card em {
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}

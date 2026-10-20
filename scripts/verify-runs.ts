@@ -6,12 +6,14 @@ import { Sim } from '../src/core/sim.ts';
 import { decodeLog, encodeLog } from '../src/core/ghost.ts';
 import { mulberry32 } from '../src/core/rng.ts';
 import { SHIP_IDS, type ShipId } from '../src/core/ships.ts';
+import { CHECKPOINTS, sectorBeatTime } from '../src/core/zones.ts';
 
 const SEEDS = 12;
 const DURATION = 480;
 const FRAME_RATES = [60, 30, 144];
 
 let failures = 0;
+const seen = { sentinels: 0, flips: 0, ramps: 0, boosts: 0 };
 for (const ship of SHIP_IDS) {
 for (const fps of FRAME_RATES) {
   for (let seed = 1; seed <= SEEDS; seed++) {
@@ -30,6 +32,7 @@ for (const fps of FRAME_RATES) {
       const o = sim.track.obstacles.find((x) => x.done === 'hit');
       console.log(`FAIL ${ship} seed ${seed} @${fps}fps: died at t=${t.toFixed(2)} on ${o?.kind} lanes ${o?.lane0}-${o?.lane1} (player lane ${sim.lane}, x ${sim.x.toFixed(2)}, y ${sim.y.toFixed(2)})`);
     } else if (fps === 60 && ship === 'delta') {
+      for (const k of Object.keys(seen) as (keyof typeof seen)[]) seen[k] += sim.stats[k];
       console.log(
         `seed ${String(seed).padStart(2)}: ${Math.round(sim.distance)} m, score ${Math.round(sim.score)}, orbs ${sim.orbs}, near misses ${sim.nearMisses}, sector ${sim.sector + 1}`,
       );
@@ -37,6 +40,48 @@ for (const fps of FRAME_RATES) {
   }
 }
 console.log(`${ship}: ${SEEDS * FRAME_RATES.length} autopilot runs done.`);
+}
+
+// The set pieces must actually happen (and be survived) in those runs, or the check proves nothing.
+console.log(`Set pieces cleared by the Delta autopilot: ${seen.sentinels} Sentinels, ${seen.flips} gravity flips, ${seen.ramps} ramps, ${seen.boosts} boost pads.`);
+if (!seen.sentinels || !seen.flips || !seen.ramps || !seen.boosts) {
+  failures++;
+  console.error('Some set piece never came up in the autopilot runs.');
+}
+
+// Practice: starting part-way in, at any checkpoint, must give a clear and survivable run-up.
+{
+  let n = 0;
+  for (let sector = 1; sector <= 6; sector++) {
+    for (const b of CHECKPOINTS) {
+      const at = sectorBeatTime(sector, b);
+      const sim = new Sim(sector * 31 + b, null, 'delta', { startAt: at });
+      const bot = new Bot(sim);
+      let t = at;
+      while (t < at + 60 && sim.alive) {
+        t += 1 / 60;
+        bot.update();
+        sim.step(t);
+        sim.events.length = 0;
+      }
+      n++;
+      if (!sim.alive) {
+        failures++;
+        console.error(`Practice from sector ${sector + 1} beat ${b} crashed at t=${t.toFixed(2)}.`);
+      }
+    }
+  }
+  console.log(`Practice: ${n} attempts from every checkpoint in sectors 2–7 survived a minute each.`);
+}
+
+// Track version 1 (runs recorded before set pieces) must not contain any of them.
+for (let seed = 1; seed <= SEEDS; seed++) {
+  const v1 = new Sim(seed * 7919, null, 'delta', { trk: 1 });
+  v1.track.generateUntil(DURATION);
+  if (v1.track.obstacles.some((o) => o.kind === 'beam' || o.kind === 'ramp') || v1.track.pickups.some((p) => p.kind === 'boost')) {
+    failures++;
+    console.error(`Track v1 seed ${seed} contains version 2 features.`);
+  }
 }
 
 // Ship tracks: a ship that can't use a power-up gets a different one in its place, but every

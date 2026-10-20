@@ -34,6 +34,8 @@ export class World {
   private speedMat: THREE.LineBasicMaterial;
   private stars: THREE.Points;
   private tmp = new THREE.Object3D();
+  /** 0..1 while inside a tunnel: the sun and sky dim behind the walls. */
+  enclosed = 0;
 
   constructor() {
     const g = this.group;
@@ -225,8 +227,9 @@ export class World {
     this.sky.uniforms.uTop.value.copy(c.skyTop);
     this.sky.uniforms.uHorizon.value.copy(c.skyHorizon);
     this.sky.uniforms.uPulse.value = pulse;
-    this.sun.uniforms.uTop.value.copy(c.sunTop);
-    this.sun.uniforms.uBottom.value.copy(c.sunBottom);
+    const dim = 1 - this.enclosed * 0.75;
+    this.sun.uniforms.uTop.value.copy(c.sunTop).multiplyScalar(dim);
+    this.sun.uniforms.uBottom.value.copy(c.sunBottom).multiplyScalar(dim);
     this.sun.uniforms.uTime.value = time;
     this.sun.uniforms.uPulse.value = pulse;
 

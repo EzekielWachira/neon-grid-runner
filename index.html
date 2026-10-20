@@ -42,7 +42,9 @@
           <button id="race" class="btn" hidden>Ghost race <small id="race-sub"></small></button>
         </div>
         <div class="sub-menu">
+          <button id="practice-btn" class="btn ghost">Practice</button>
           <button id="missions-btn" class="btn ghost">Missions</button>
+          <button id="badges-btn" class="btn ghost">Badges</button>
           <button id="replays-btn" class="btn ghost">Replays</button>
           <button id="garage-btn" class="btn ghost">Garage</button>
           <button id="settings-btn" class="btn ghost">Settings</button>
@@ -146,6 +148,14 @@
         <label class="row-set"><span>Show FPS</span><input id="set-fps" type="checkbox" class="switch" /></label>
         <label class="row-set"><span>Curved road <small>sweeping turns and hills (visual only)</small></span><input id="set-curves" type="checkbox" class="switch" /></label>
         <label class="row-set"><span>Race my daily ghost</span><input id="set-ghosts" type="checkbox" class="switch" /></label>
+        <label class="row-set"><span>Vibration <small>gamepad rumble, phone buzz (Android)</small></span><input id="set-haptics" type="checkbox" class="switch" /></label>
+        <label class="row-set"><span>Swipe sensitivity</span><input id="set-swipe" type="range" min="0" max="1" step="0.05" /></label>
+        <label class="row-set"><span>Touch controls <small>tap zones: tap left/right thirds to steer, middle to jump</small></span>
+          <select id="set-touch">
+            <option value="swipe">Swipes</option>
+            <option value="zones">Tap zones (one-handed)</option>
+          </select>
+        </label>
         <label class="row-set"><span>Callsign <small>shown on your ghost links</small></span><input id="set-callsign" type="text" maxlength="16" spellcheck="false" autocomplete="off" /></label>
         <button id="settings-close" class="btn primary">Done</button>
       </div>
@@ -188,6 +198,7 @@
             <p id="gd-perk"></p>
             <small id="gd-key"></small>
             <p class="gd-trade">Trade-off: <span id="gd-trade"></span></p>
+            <p id="gd-badge" class="gd-badge"></p>
           </div>
           <div class="gd-mastery">
             <div><b id="gd-mastery"></b><span id="gd-best"></span></div>
@@ -213,6 +224,30 @@
           <button id="card-copy" class="btn small">Copy text</button>
           <button id="card-close" class="btn ghost small">Back</button>
         </div>
+      </div>
+    </section>
+
+    <section id="practice" class="screen modal">
+      <div class="panel missions-panel">
+        <h2>Practice</h2>
+        <p class="ms-note">Pick any sector you've reached. Practice runs never count for scores, missions or badges.</p>
+        <div id="pr-sectors" class="pr-sectors"></div>
+        <p class="pr-name"><b id="pr-name"></b><span id="pr-ship"></span></p>
+        <label class="row-set"><span>Half speed <small>the music sits this one out</small></span><input id="pr-half" type="checkbox" class="switch" /></label>
+        <label class="row-set"><span>Checkpoints <small>respawn before each tunnel and Sentinel</small></span><input id="pr-checkpoints" type="checkbox" class="switch" checked /></label>
+        <div class="menu row">
+          <button id="pr-go" class="btn primary small">Start</button>
+          <button id="pr-close" class="btn ghost small">Back</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="badges" class="screen modal">
+      <div class="panel missions-panel badges-panel">
+        <h2>Badges</h2>
+        <p id="bd-count" class="ms-note"></p>
+        <div id="bd-list" class="bd-list"></div>
+        <button id="badges-close" class="btn primary">Done</button>
       </div>
     </section>
 
