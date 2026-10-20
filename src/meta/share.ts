@@ -1,7 +1,9 @@
 // Ghost challenge links: the seed, input log and a few labels, carried in the URL hash.
 // v2 links fly with their ship's class rules; v1 links predate ship classes, so their runs were
-// simulated as a Delta whatever hull they showed.
+// simulated as a Delta whatever hull they showed. Links without a track version (`k`) were made on
+// track version 1, before set pieces.
 import { decodeLog } from '../core/ghost.ts';
+import { TRACK_VERSION } from '../core/track.ts';
 import { isShipId, type ShipId } from './garage.ts';
 
 export interface GhostLink {
@@ -13,6 +15,8 @@ export interface GhostLink {
   ship: ShipId;
   /** The class rules the run was simulated with. */
   cls: ShipId;
+  /** Track version the run was flown on. */
+  trk: number;
   /** Set when the run was a daily run. */
   day?: string;
 }
@@ -31,7 +35,7 @@ function fromB64(s: string) {
 }
 
 export function encodeGhostLink(g: GhostLink): string {
-  return toB64(JSON.stringify({ v: 2, s: g.seed, l: g.log, p: Math.floor(g.score), n: g.name, h: g.ship, d: g.day }));
+  return toB64(JSON.stringify({ v: 2, s: g.seed, l: g.log, p: Math.floor(g.score), n: g.name, h: g.ship, d: g.day, k: g.trk }));
 }
 
 export function decodeGhostLink(s: string): GhostLink | null {
@@ -46,6 +50,7 @@ export function decodeGhostLink(s: string): GhostLink | null {
       name: typeof d.n === 'string' && d.n.trim() ? d.n.trim().slice(0, 16) : 'A rival',
       ship,
       cls: d.v === 2 ? ship : 'delta',
+      trk: Number.isInteger(d.k) && d.k >= 1 && d.k <= TRACK_VERSION ? d.k : 1,
       day: typeof d.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.d) ? d.d : undefined,
     };
   } catch {

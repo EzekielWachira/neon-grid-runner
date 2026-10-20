@@ -1,8 +1,11 @@
 import './style.css';
-import { BEAT, type PowerKind } from './core/config.ts';
-import { Sim, type InputEntry, type SimEvent } from './core/sim.ts';
+import { BEAT, BOOST_TIME, type PowerKind } from './core/config.ts';
+import { PRACTICE_LEAD, Sim, type InputEntry, type SimEvent } from './core/sim.ts';
 import { Bot } from './core/bot.ts';
-import type { ShipId } from './core/ships.ts';
+import { SHIP_IDS, type ShipId } from './core/ships.ts';
+import { TRACK_VERSION } from './core/track.ts';
+import { CHECKPOINTS, sectorBeatTime } from './core/zones.ts';
+import { ACHIEVEMENTS, ACH_REWARD, checkAchievements, shipAchievement, type AchContext } from './meta/achievements.ts';
 import { decodeLog, encodeLog } from './core/ghost.ts';
 import { audio } from './audio/engine.ts';
 import { View, type CamMode, type Quality } from './render/view.ts';
@@ -46,6 +49,12 @@ interface Settings {
   ghosts: boolean;
   callsign: string;
   curves: boolean;
+  /** Gamepad rumble and phone vibration. */
+  haptics: boolean;
+  /** Swipe sensitivity 0..1 (higher reacts to shorter swipes). */
+  swipe: number;
+  /** 'zones': one-handed taps (left/right thirds steer, middle jumps). */
+  touch: 'swipe' | 'zones';
 }
 interface GhostSave {
   seed: number;
@@ -56,6 +65,8 @@ interface GhostSave {
   ship: ShipId;
   /** Class rules it was simulated with; missing on runs saved before ship classes (they flew as a Delta). */
   cls?: ShipId;
+  /** Track version; missing on runs from before set pieces (version 1). */
+  trk?: number;
   key?: string;
 }
 interface Save {
@@ -74,6 +85,9 @@ interface Save {
   shipGhosts: Partial<Record<ShipId, GhostSave>>;
   dailyGhost?: GhostSave;
   lastRun?: GhostSave;
+  /** Badge id → when it was earned. */
+  achievements: Record<string, number>;
+  totalOrbs: number;
 }
 const KEY = 'neon-grid-runner:v1';
 function load(): Save {
@@ -85,7 +99,22 @@ function load(): Save {
     daily: {},
     shipBest: {},
     shipGhosts: {},
-    settings: { quality: 'auto', music: 0.8, sfx: 0.9, shake: true, fps: false, muted: false, ghosts: true, callsign: 'Runner', curves: true },
+    achievements: {},
+    totalOrbs: 0,
+    settings: {
+      quality: 'auto',
+      music: 0.8,
+      sfx: 0.9,
+      shake: true,
+      fps: false,
+      muted: false,
+      ghosts: true,
+      callsign: 'Runner',
+      curves: true,
+      haptics: true,
+      swipe: 0.55,
+      touch: 'swipe',
+    },
     missions: freshMissions(),
     garage: freshGarage(),
   };
@@ -116,12 +145,13 @@ const persist = () => {
 };
 
 const clsOf = (g: GhostSave): ShipId => (g.cls && isShipId(g.cls) ? g.cls : 'delta');
+const trkOf = (g: GhostSave) => (Number.isInteger(g.trk) && g.trk! >= 1 && g.trk! <= TRACK_VERSION ? g.trk! : 1);
 const owns = (ship: ShipId) => save.garage.owned.includes(itemKey('ship', ship));
 
 // ---------------------------------------------------------------- DOM
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
-const screens = ['title', 'hud', 'pause', 'over', 'settings', 'missions', 'garage', 'replay', 'replays', 'card'] as const;
+const screens = ['title', 'hud', 'pause', 'over', 'settings', 'missions', 'garage', 'replay', 'replays', 'card', 'practice', 'badges'] as const;
 type Screen = (typeof screens)[number];
 function show(...names: Screen[]) {
   for (const s of screens) $(`#${s}`).classList.toggle('visible', names.includes(s));
@@ -172,10 +202,18 @@ interface Rival {
   ship: ShipId;
   /** Class rules the run was flown with; you fly the same class to race it. */
   cls: ShipId;
+  /** Track version: you race it on the same track. */
+  trk: number;
   name: string;
 }
 
-type RunMode = { kind: 'endless' } | { kind: 'daily'; key: string } | { kind: 'ghost'; rival: Rival };
+/** Practice: a chosen sector, optionally at half speed, respawning at checkpoints. Never scored. */
+interface PracticeOpts {
+  sector: number;
+  half: boolean;
+  checkpoints: boolean;
+}
+type RunMode = { kind: 'endless' } | { kind: 'daily'; key: string } | { kind: 'ghost'; rival: Rival } | ({ kind: 'practice' } & PracticeOpts);
 type State = 'title' | 'garage' | 'run' | 'paused' | 'dying' | 'over' | 'replay';
 
 let state: State = 'title';
@@ -196,6 +234,10 @@ let runShip: ShipId = 'delta';
 /** A frame grabbed just after the crash, for the result card. */
 let deathShot: string | null = null;
 let lastCard: CardData | null = null;
+/** Song time the current attempt started at (practice starts part-way in). */
+let runFrom = 0;
+let practiceSeed = 0;
+let practiceResets = 0;
 
 // Dev-only autopilot (`__ngr.autopilot(true)` in the console lets the bot play a real run).
 let devAutopilot = false;
@@ -216,22 +258,32 @@ function startAttract() {
 function startRun(next: RunMode) {
   const ok = audio.init();
   mode = next;
+  if (next.kind === 'practice') {
+    practiceSeed = (Math.random() * 2 ** 31) | 0;
+    practiceResets = 0;
+    beginAttempt(next.sector === 0 ? 0 : sectorBeatTime(next.sector, 0));
+    return;
+  }
+  runBadges = [];
   const seed = next.kind === 'daily' ? dailySeed(next.key) : next.kind === 'ghost' ? next.rival.seed : (Math.random() * 2 ** 31) | 0;
   // Dailies and ghost races lend you the ship they're flown in, so everyone races like for like.
   runShip = next.kind === 'daily' ? dailyShip(next.key) : next.kind === 'ghost' ? next.rival.cls : save.garage.loadout.ship;
-  sim = new Sim(seed, null, runShip);
+  // A ghost race runs on the track version its ghost was recorded on.
+  const trk = next.kind === 'ghost' ? next.rival.trk : TRACK_VERSION;
+  sim = new Sim(seed, null, runShip, { trk });
   bot = null;
   devBot = null;
   deathShot = null;
+  runFrom = 0;
 
   // Who to race: a ghost race brings its rival; a daily run shows your earlier best from today.
   rival = null;
   if (next.kind === 'ghost') rival = next.rival;
-  else if (next.kind === 'daily' && save.settings.ghosts && save.dailyGhost?.key === next.key && clsOf(save.dailyGhost) === runShip) {
+  else if (next.kind === 'daily' && save.settings.ghosts && save.dailyGhost?.key === next.key && clsOf(save.dailyGhost) === runShip && trkOf(save.dailyGhost) === trk) {
     const log = decodeLog(save.dailyGhost.log);
-    if (log) rival = { seed, log, score: save.dailyGhost.score, ship: save.dailyGhost.ship, cls: runShip, name: 'Your best' };
+    if (log) rival = { seed, log, score: save.dailyGhost.score, ship: save.dailyGhost.ship, cls: runShip, trk, name: 'Your best' };
   }
-  ghost = rival ? new Sim(seed, rival.log, rival.cls) : null;
+  ghost = rival ? new Sim(seed, rival.log, rival.cls, { trk }) : null;
   ghostWasAlive = true;
   view.reset();
   view.setLoadout({ ...save.garage.loadout, ship: runShip });
@@ -241,6 +293,7 @@ function startRun(next: RunMode) {
 
   missionRun = new MissionRun(save.missions, next.kind === 'daily');
   const songStart = clock.start(ok && !!audio.ctx);
+  audio.setPieces = trk >= 2;
   if (ok) audio.startSong(songStart);
   lastCount = -1;
   state = 'run';
@@ -265,6 +318,75 @@ function abilityHint(ship: ShipId) {
   if (ship === 'manta') return touchUi() ? 'Swipe up again in mid-air to glide' : 'Press jump again in mid-air to glide';
   const how = touchUi() ? 'Tap the button' : 'E / Shift';
   return ship === 'twin' ? `${how} to blast the next block in your lane` : `${how} to phase through anything (once per sector)`;
+}
+
+/**
+ * Starts (or restarts, after a crash) a practice attempt at song time `from`. Half speed runs on
+ * the wall clock with the music off, since the soundtrack can't slow down.
+ */
+function beginAttempt(from: number) {
+  if (mode.kind !== 'practice') return;
+  const ok = audio.init();
+  runShip = save.garage.loadout.ship;
+  runFrom = from;
+  sim = new Sim(practiceSeed, null, runShip, from ? { startAt: from } : {});
+  bot = null;
+  devBot = null;
+  rival = null;
+  ghost = null;
+  missionRun = null;
+  view.reset();
+  view.palette.set(sim.sector, true);
+  view.setLoadout({ ...save.garage.loadout, ship: runShip });
+  view.setGhostShip(null);
+  $('#hud').classList.remove('has-ghost');
+  const withMusic = ok && !!audio.ctx && !mode.half;
+  const base = clock.start(withMusic);
+  audio.setPieces = true;
+  if (withMusic) {
+    audio.startSong(base - from);
+    audio.layer = sim.sector;
+  } else audio.stopSong(false);
+  lastCount = -1;
+  state = 'run';
+  $('#hud').classList.add('daily');
+  updatePracticeTag();
+  $('#popups').innerHTML = '';
+  $('#banner').className = 'banner';
+  clearPowers();
+  setupAbilityHud();
+  show('hud');
+}
+
+function updatePracticeTag() {
+  if (mode.kind !== 'practice') return;
+  $('#mode-tag').textContent = ['Practice', `Sector ${sim.sector + 1}`, mode.half ? '½ speed' : '', practiceResets ? `${practiceResets} reset${practiceResets === 1 ? '' : 's'}` : '']
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/** Song time for the run: practice can start part-way in, and half speed runs the clock at half rate. */
+function runTime() {
+  const t = Math.max(0, clock.now());
+  return mode.kind === 'practice' ? runFrom + t * (mode.half ? 0.5 : 1) : t;
+}
+
+/** Practice crash: back to the latest checkpoint at or before it (or the start of the chosen sector). */
+function respawn() {
+  if (mode.kind !== 'practice') return;
+  const start = mode.sector === 0 ? 0 : sectorBeatTime(mode.sector, 0);
+  let at = start;
+  if (mode.checkpoints) {
+    for (let s = mode.sector; s <= sim.sector; s++) {
+      for (const b of CHECKPOINTS) {
+        const t = sectorBeatTime(s, b);
+        if (t >= start && t <= sim.t - 0.5 && t > at) at = t;
+      }
+    }
+  }
+  practiceResets++;
+  beginAttempt(at);
+  toast(at === start ? 'Restart' : 'Checkpoint', `Sector ${Math.floor(at / BEAT / 96) + 1}`);
 }
 
 function retry() {
@@ -314,6 +436,7 @@ function settleRun(): RunReport | null {
 
 function quitToMenu() {
   audio.stopSong(false);
+  if (mode.kind === 'practice') mode = { kind: 'endless' };
   clock.resume();
   clearPowers();
   settleRun();
@@ -327,7 +450,8 @@ function gameOver() {
   const score = Math.floor(sim.score);
   const log = encodeLog(sim.log);
   const ship = runShip;
-  const run: GhostSave = { seed: sim.seed, log, score, distance: Math.floor(sim.distance), ship, cls: ship };
+  const run: GhostSave = { seed: sim.seed, log, score, distance: Math.floor(sim.distance), ship, cls: ship, trk: sim.trk };
+  save.totalOrbs += sim.orbs;
 
   let isBest = false;
   let shipBest = false;
@@ -439,13 +563,24 @@ function gameOver() {
   line('reward-mastery', `${shipName(ship)} mastery +${fmt(mastery.after - mastery.before)} m`);
   for (let l = mastery.levelBefore + 1; l <= mastery.levelAfter; l++) line('reward-rank', `${shipName(ship)} mastery ${l}! ${MASTERY_REWARD[l]?.text ?? ''}`);
   for (const item of unlocked) line('reward-rank', `Unlocked: ${item.name}${item.kind === 'color' ? ' paint' : ''}`);
+  if (sim.stats.sentinels) line('reward-mission', `Sentinels survived: ${sim.stats.sentinels}`);
+  // Badges: the ones earned mid-run were already announced; list everything earned this run.
+  awardBadges('end', rival ? score > rival.score && mode.kind === 'ghost' : false);
+  for (const id of runBadges) {
+    const a = ACHIEVEMENTS.find((x) => x.id === id)!;
+    line('reward-badge', `🏅 ${a.name}  +${ACH_REWARD}`);
+  }
+  persist();
   show('over');
 }
 
 // ---------------------------------------------------------------- input
 
 const input = new Input(canvas, onAction);
+/** During a gravity flip the screen is upside down, so live controls follow the screen. */
+const FLIPPED: Partial<Record<Action, Action>> = { left: 'right', right: 'left', jump: 'slide', slide: 'jump' };
 function onAction(a: Action) {
+  if (state === 'run' && sim.flipped) a = FLIPPED[a] ?? a;
   if (state === 'run') {
     if (a === 'left') sim.move(-1);
     else if (a === 'right') sim.move(1);
@@ -455,7 +590,7 @@ function onAction(a: Action) {
     else if (a === 'pause') pause();
   } else if (state === 'paused' && a === 'pause') resume();
   else if (state === 'title' && a === 'jump' && !document.querySelector('.modal.visible')) startRun(challenge ? ghostMode(challenge) : { kind: 'endless' });
-  else if (state === 'over' && a === 'jump' && performance.now() - overAt > 800) retry();
+  else if (state === 'over' && a === 'jump' && performance.now() - overAt > 800 && !document.querySelector('#card.visible')) retry();
   else if (state === 'garage' && a === 'pause') closeGarage();
   else if (state === 'garage' && garageTab === 'ship' && (a === 'left' || a === 'right')) stepGallery(a === 'left' ? -1 : 1);
   else if (state === 'replay' && rp) {
@@ -537,6 +672,7 @@ function onEvent(e: SimEvent) {
       break;
     case 'nearMiss':
       audio.nearMiss();
+      input.rumble(0.2, 50);
       popup(`${e.style === 'side' ? 'Near miss' : e.style === 'over' ? 'Close jump' : 'Close slide'} +${e.bonus}`, 'near');
       break;
     case 'mult':
@@ -550,21 +686,53 @@ function onEvent(e: SimEvent) {
       break;
     case 'smash':
       audio.smash();
+      input.rumble(0.4, 80);
       break;
     case 'shieldBreak':
       audio.shieldBreak();
+      input.rumble(0.7, 220);
       popup('Shield down', 'bad');
       break;
     case 'sector':
       audio.sector();
       audio.layer = e.sector;
       banner(`Sector ${e.sector + 1}`, PALETTES[e.sector % PALETTES.length].name);
+      updatePracticeTag();
+      break;
+    case 'ramp':
+      audio.ramp();
+      popup('Launch!', 'near');
+      input.rumble(0.45, 140);
+      break;
+    case 'boost':
+      audio.boost();
+      popup('Boost ×2', 'power overdrive');
+      input.rumble(0.25, 60);
+      break;
+    case 'tunnel':
+      if (e.on) banner('Tunnel', 'Keep low: it’s all slides in here');
+      break;
+    case 'flip':
+      audio.flip();
+      input.rumble(0.5, 200);
+      if (e.on) banner('Gravity flip', 'Controls follow the screen');
+      break;
+    case 'sentinelWarn':
+      audio.sentinelWarn();
+      input.rumble(0.35, 300);
+      banner('Sentinel', 'Survive the barrage');
+      break;
+    case 'sentinelClear':
+      audio.sentinelClear();
+      input.rumble(0.9, 450);
+      banner('Sentinel down', `+${fmt(e.bonus)}`);
       break;
     case 'glide':
       audio.glide();
       break;
     case 'pulse':
       audio.pulse(!!e.obstacle);
+      input.rumble(e.obstacle ? 0.6 : 0.3, 110);
       if (e.obstacle) popup(`Blasted +${Math.round(25 * sim.mult * sim.cls.score)}`, 'power overdrive');
       break;
     case 'phase':
@@ -581,10 +749,54 @@ function onEvent(e: SimEvent) {
     case 'death':
       audio.death();
       audio.stopSong();
+      input.rumble(1, 500);
       state = 'dying';
       dyingFor = 0;
       break;
   }
+}
+
+// ---------------------------------------------------------------- achievements
+
+/** Badges earned during the current run (announced as they happen, listed again on the results). */
+let runBadges: string[] = [];
+
+type BadgeCheck = 'live' | 'end' | 'meta';
+
+function achContext(when: BadgeCheck, beatGhost = false): AchContext {
+  const mastery = Object.fromEntries(SHIP_IDS.map((id) => [id, masteryLevel(save.garage.xp[id] ?? 0)])) as Record<ShipId, number>;
+  return {
+    // Outside a run, `sim` is the title screen's autopilot, which must never earn anything.
+    sim: when === 'meta' ? null : sim,
+    ended: when === 'end',
+    ship: runShip,
+    totalOrbs: save.totalOrbs,
+    runs: save.runs,
+    streak: streak(save.daily),
+    shipsOwned: SHIP_IDS.filter(owns).length,
+    mastery,
+    rank: rankOf(save.missions),
+    beatGhost,
+  };
+}
+
+/**
+ * Checks for new badges and pays for them: 'live' mid-run (announced with a toast), 'end' as a
+ * run finishes, 'meta' outside runs (unlocks, ranks). Practice runs never earn badges.
+ */
+function awardBadges(when: BadgeCheck, beatGhost = false) {
+  if (when !== 'meta' && mode.kind === 'practice') return;
+  const fresh = checkAchievements(achContext(when, beatGhost), save.achievements);
+  for (const a of fresh) {
+    save.achievements[a.id] = Date.now();
+    save.garage.credits += ACH_REWARD;
+    if (when !== 'meta') runBadges.push(a.id);
+    if (when === 'live') {
+      toast('Badge unlocked', `${a.name} · +${ACH_REWARD} credits`);
+      audio.power();
+    }
+  }
+  if (fresh.length) persist();
 }
 
 function bump(el: HTMLElement) {
@@ -600,8 +812,8 @@ const tagPos = { x: 0, y: 0 };
 function updateHud() {
   $('#score').textContent = fmt(sim.score);
   const m = $('#mult');
-  m.textContent = `x${sim.mult * (sim.powers.overdrive > 0 ? 2 : 1)}`;
-  m.classList.toggle('hot', sim.mult > 1 || sim.powers.overdrive > 0);
+  m.textContent = `x${sim.mult * (sim.powers.overdrive > 0 ? 2 : 1) * (sim.boost > 0 ? 2 : 1)}`;
+  m.classList.toggle('hot', sim.mult > 1 || sim.powers.overdrive > 0 || sim.boost > 0);
   $('#dist').textContent = `${fmt(sim.distance)} m`;
   $('#sector-label').textContent = `Sector ${sim.sector + 1}`;
   $('#combo').textContent = sim.combo >= 3 ? `${sim.combo} combo` : '';
@@ -622,6 +834,18 @@ function updateHud() {
     }
     if (el) (el.querySelector('b') as HTMLElement).style.width = `${(left / sim.powerMax(k)) * 100}%`;
   }
+  // Boost pads get a bar of their own.
+  let boostEl = $('#powers').querySelector<HTMLElement>('.power-bar.boost');
+  if (sim.boost > 0 && !boostEl) {
+    boostEl = document.createElement('div');
+    boostEl.className = 'power-bar boost';
+    boostEl.innerHTML = `<span>Boost</span><i><b></b></i>`;
+    $('#powers').append(boostEl);
+  } else if (sim.boost <= 0 && boostEl) {
+    boostEl.remove();
+    boostEl = null;
+  }
+  if (boostEl) (boostEl.querySelector('b') as HTMLElement).style.width = `${(sim.boost / BOOST_TIME) * 100}%`;
   updateAbilityHud();
 
   // Ghost: live score gap and a name tag that follows its ship.
@@ -642,12 +866,12 @@ function updateHud() {
     ghostWasAlive = ghost.alive;
   }
 
-  // Countdown on beats 4–7 of the intro.
-  const beat = Math.floor(sim.t / BEAT);
+  // Countdown on beats 4–7 of the intro (or over the run-up of a practice attempt).
+  const beat = Math.floor((sim.t - runFrom) / BEAT) - (runFrom ? PRACTICE_LEAD - 4 : 4);
   const cd = $('#countdown');
-  if (beat >= 4 && beat <= 8 && beat !== lastCount) {
+  if (beat >= 0 && beat <= 4 && beat !== lastCount) {
     lastCount = beat;
-    const label = beat === 8 ? '' : beat === 7 ? 'GO' : String(7 - beat);
+    const label = beat === 4 ? '' : beat === 3 ? 'GO' : String(3 - beat);
     cd.textContent = label;
     cd.className = label ? 'countdown show' : 'countdown';
     if (label) audio.countdown(label === 'GO');
@@ -673,6 +897,7 @@ function updateAbilityHud() {
 function clearPowers() {
   for (const el of powerEls.values()) el.remove();
   powerEls.clear();
+  $('#powers').querySelector('.power-bar.boost')?.remove();
 }
 
 // ---------------------------------------------------------------- loop
@@ -700,7 +925,7 @@ function frame(now: number) {
     view.render(sim, dt, state === 'garage' ? 'garage' : 'title', time);
   } else if (state === 'run') {
     if (devAutopilot) (devBot ??= new Bot(sim)).update();
-    const t = Math.max(0, clock.now());
+    const t = runTime();
     sim.step(t);
     if (ghost) {
       ghost.step(t);
@@ -715,6 +940,7 @@ function frame(now: number) {
       }
     }
     updateHud();
+    awardBadges('live');
     view.render(sim, dt, state === 'run' ? 'run' : 'dying', time, ghost);
   } else if (state === 'replay' && rp) {
     updateReplay(dt, time);
@@ -724,10 +950,14 @@ function frame(now: number) {
     if (state === 'dying') {
       dyingFor += dt;
       // A beat after the crash, while the explosion is at its brightest.
-      if (!deathShot && dyingFor > 0.25) deathShot = view.capture();
-      if (dyingFor > 1.8) {
-        clearPowers();
-        gameOver();
+      if (mode.kind === 'practice') {
+        if (dyingFor > 1.1) respawn();
+      } else {
+        if (!deathShot && dyingFor > 0.25) deathShot = view.capture();
+        if (dyingFor > 1.8) {
+          clearPowers();
+          gameOver();
+        }
       }
     }
     view.render(sim, dt, 'dying', time, ghost);
@@ -749,7 +979,7 @@ function frame(now: number) {
 
 function ghostMode(g: GhostLink): RunMode {
   const log = decodeLog(g.log) ?? [];
-  return { kind: 'ghost', rival: { seed: g.seed, log, score: g.score, ship: g.ship, cls: g.cls, name: g.name } };
+  return { kind: 'ghost', rival: { seed: g.seed, log, score: g.score, ship: g.ship, cls: g.cls, trk: g.trk, name: g.name } };
 }
 
 function renderTitle() {
@@ -930,6 +1160,10 @@ function renderGallery() {
   $('#gd-xp-bar').style.width = `${masteryProgress(xp) * 100}%`;
   $('#gd-best').textContent = save.shipBest[id] ? `Best ${fmt(save.shipBest[id]!)}` : 'No runs yet';
   $('#gallery').classList.toggle('mastered', lvl >= MASTERY_MAX);
+  const badge = shipAchievement(id);
+  const earned = badge.id in save.achievements;
+  $('#gd-badge').textContent = `${earned ? '🏅' : '🔒'} ${badge.name}: ${badge.desc}`;
+  $('#gd-badge').classList.toggle('earned', earned);
 
   const btn = $<HTMLButtonElement>('#gd-action');
   const owned = ownsItem(item);
@@ -948,6 +1182,7 @@ function buyOrEquip(item: Item) {
     g.credits -= item.cost;
     g.owned.push(key);
     audio.power();
+    awardBadges('meta');
   }
   (g.loadout as unknown as Record<string, string>)[item.kind] = item.id;
   persist();
@@ -984,6 +1219,7 @@ interface ReplaySrc {
   log: InputEntry[];
   ship: ShipId;
   cls: ShipId;
+  trk: number;
   name: string;
   score: number;
 }
@@ -999,19 +1235,21 @@ function srcFrom(g: GhostSave | GhostLink, name: string): ReplaySrc | null {
   const log = decodeLog(g.log);
   if (!log) return null;
   const cls = 'name' in g ? g.cls : clsOf(g);
-  return { seed: g.seed, log, ship: isShipId(g.ship) ? g.ship : 'delta', cls, name, score: g.score };
+  const trk = 'name' in g ? g.trk : trkOf(g);
+  return { seed: g.seed, log, ship: isShipId(g.ship) ? g.ship : 'delta', cls, trk, name, score: g.score };
 }
 
 /** Opens a run in the replay theatre. The run is simulated once up front to find its length. */
 function openReplay(src: ReplaySrc) {
   audio.init();
   audio.stopSong(false);
-  const probe = new Sim(src.seed, src.log, src.cls);
+  const probe = new Sim(src.seed, src.log, src.cls, { trk: src.trk });
+  audio.setPieces = src.trk >= 2;
   while (probe.alive && probe.t < 1800) {
     probe.step(probe.t + 5);
     probe.events.length = 0;
   }
-  rp = { src, sim: new Sim(src.seed, src.log, src.cls), t: 0, speed: 1, paused: false, duration: probe.t + 2, photo: false, seeking: false };
+  rp = { src, sim: new Sim(src.seed, src.log, src.cls, { trk: src.trk }), t: 0, speed: 1, paused: false, duration: probe.t + 2, photo: false, seeking: false };
   sim = rp.sim;
   ghost = null;
   view.reset();
@@ -1040,7 +1278,7 @@ function replaySeek(t: number) {
   if (!rp) return;
   t = Math.max(0, Math.min(rp.duration, t));
   if (t < rp.sim.t) {
-    rp.sim = new Sim(rp.src.seed, rp.src.log, rp.src.cls);
+    rp.sim = new Sim(rp.src.seed, rp.src.log, rp.src.cls, { trk: rp.src.trk });
     sim = rp.sim;
     view.reset();
   }
@@ -1121,6 +1359,11 @@ function updateReplay(dt: number, time: number) {
     else if (e.type === 'pulse') audio.pulse(!!e.obstacle);
     else if (e.type === 'phase') audio.phase();
     else if (e.type === 'glide') audio.glide();
+    else if (e.type === 'ramp') audio.ramp();
+    else if (e.type === 'boost') audio.boost();
+    else if (e.type === 'flip') audio.flip();
+    else if (e.type === 'sentinelWarn') audio.sentinelWarn();
+    else if (e.type === 'sentinelClear') audio.sentinelClear();
     else if (e.type === 'sector') {
       audio.sector();
       audio.layer = e.sector;
@@ -1185,6 +1428,9 @@ function applySettings() {
   view.setQuality(s.quality);
   $('#fps').hidden = !s.fps;
   $('#mute-btn').classList.toggle('muted', s.muted);
+  input.haptics = s.haptics;
+  input.swipe = Math.round(46 - 34 * s.swipe);
+  input.tapZones = s.touch === 'zones';
 }
 
 function openSettings() {
@@ -1196,6 +1442,9 @@ function openSettings() {
   $<HTMLInputElement>('#set-fps').checked = s.fps;
   $<HTMLInputElement>('#set-ghosts').checked = s.ghosts;
   $<HTMLInputElement>('#set-curves').checked = s.curves;
+  $<HTMLInputElement>('#set-haptics').checked = s.haptics;
+  $<HTMLInputElement>('#set-swipe').value = String(s.swipe);
+  $<HTMLSelectElement>('#set-touch').value = s.touch;
   $<HTMLInputElement>('#set-callsign').value = s.callsign;
   show('title', 'settings');
 }
@@ -1224,7 +1473,7 @@ $('#daily').addEventListener('click', () => startRun({ kind: 'daily', key: dateK
 $('#race').addEventListener('click', () => {
   const g = save.shipGhosts[save.garage.loadout.ship];
   if (!g) return;
-  startRun({ kind: 'ghost', rival: { seed: g.seed, log: decodeLog(g.log) ?? [], score: g.score, ship: isShipId(g.ship) ? g.ship : 'delta', cls: clsOf(g), name: 'Your best' } });
+  startRun({ kind: 'ghost', rival: { seed: g.seed, log: decodeLog(g.log) ?? [], score: g.score, ship: isShipId(g.ship) ? g.ship : 'delta', cls: clsOf(g), trk: trkOf(g), name: 'Your best' } });
 });
 $('#challenge-go').addEventListener('click', () => challenge && startRun(ghostMode(challenge)));
 $('#challenge-x').addEventListener('click', () => {
@@ -1233,6 +1482,70 @@ $('#challenge-x').addEventListener('click', () => {
   renderTitle();
 });
 $('#missions-btn').addEventListener('click', openMissions);
+
+// Practice: pick a sector you've reached, then go.
+let practiceSector = 0;
+function openPractice() {
+  const list = $('#pr-sectors');
+  list.innerHTML = '';
+  const max = Math.max(1, Math.min(save.bestSector, 12));
+  practiceSector = Math.min(practiceSector, max - 1);
+  for (let i = 0; i < max; i++) {
+    const b = document.createElement('button');
+    b.className = `btn ghost small pr-sector${i === practiceSector ? ' on' : ''}`;
+    b.textContent = String(i + 1);
+    b.title = PALETTES[i % PALETTES.length].name;
+    b.addEventListener('click', () => {
+      practiceSector = i;
+      for (const x of list.children) x.classList.toggle('on', x === b);
+      $('#pr-name').textContent = `Sector ${i + 1} · ${PALETTES[i % PALETTES.length].name}`;
+    });
+    list.append(b);
+  }
+  $('#pr-name').textContent = `Sector ${practiceSector + 1} · ${PALETTES[practiceSector % PALETTES.length].name}`;
+  $('#pr-ship').textContent = `Flying the ${shipName(save.garage.loadout.ship)}`;
+  show('title', 'practice');
+}
+$('#practice-btn').addEventListener('click', openPractice);
+$('#pr-close').addEventListener('click', () => show('title'));
+$('#pr-go').addEventListener('click', () =>
+  startRun({ kind: 'practice', sector: practiceSector, half: $<HTMLInputElement>('#pr-half').checked, checkpoints: $<HTMLInputElement>('#pr-checkpoints').checked }),
+);
+
+// Badge wall.
+function openBadges() {
+  awardBadges('meta');
+  const list = $('#bd-list');
+  list.innerHTML = '';
+  for (const a of ACHIEVEMENTS) {
+    const earned = a.id in save.achievements;
+    const card = document.createElement('div');
+    card.className = `badge-card${earned ? ' earned' : ''}`;
+    const icon = document.createElement('i');
+    icon.textContent = earned ? '🏅' : '🔒';
+    const text = document.createElement('div');
+    const name = document.createElement('b');
+    name.textContent = a.name;
+    const desc = document.createElement('span');
+    desc.textContent = a.desc;
+    text.append(name, desc);
+    if (a.ship) {
+      const tag = document.createElement('em');
+      tag.textContent = shipName(a.ship);
+      text.append(tag);
+    }
+    card.append(icon, text);
+    list.append(card);
+  }
+  const n = ACHIEVEMENTS.filter((a) => a.id in save.achievements).length;
+  $('#bd-count').textContent = `${n} / ${ACHIEVEMENTS.length} earned · +${ACH_REWARD} credits each`;
+  show('title', 'badges');
+}
+$('#badges-btn').addEventListener('click', openBadges);
+$('#badges-close').addEventListener('click', () => {
+  renderTitle();
+  show('title');
+});
 $('#missions-close').addEventListener('click', () => show('title'));
 $('#garage-btn').addEventListener('click', openGarage);
 $('#garage-close').addEventListener('click', closeGarage);
@@ -1266,6 +1579,7 @@ function ghostUrl() {
     name: save.settings.callsign || 'Runner',
     ship: runShip,
     cls: runShip,
+    trk: sim.trk,
     day: mode.kind === 'daily' ? mode.key : undefined,
   };
   return `${location.href.split('#')[0]}#ghost=${encodeGhostLink(link)}`;
@@ -1369,6 +1683,23 @@ for (const id of ['music', 'sfx'] as const) {
     applySettings();
   });
 }
+$('#set-swipe').addEventListener('input', (e) => {
+  save.settings.swipe = Number((e.target as HTMLInputElement).value);
+  persist();
+  applySettings();
+});
+$('#set-touch').addEventListener('change', (e) => {
+  save.settings.touch = (e.target as HTMLSelectElement).value as Settings['touch'];
+  persist();
+  applySettings();
+});
+$('#set-haptics').addEventListener('change', (e) => {
+  save.settings.haptics = (e.target as HTMLInputElement).checked;
+  persist();
+  applySettings();
+  // A little buzz so you can feel it's on.
+  if (save.settings.haptics) input.rumble(0.5, 120);
+});
 for (const id of ['shake', 'fps', 'ghosts', 'curves'] as const) {
   $(`#set-${id}`).addEventListener('change', (e) => {
     save.settings[id] = (e.target as HTMLInputElement).checked;

@@ -1,6 +1,6 @@
 // Meshes for obstacles and pickups, pooled and positioned from the simulation each frame.
 import * as THREE from 'three';
-import { LANE_W, OBSTACLE_SHAPE, VIEW_DIST, laneX, type ObstacleKind } from '../core/config.ts';
+import { LANE_W, OBSTACLE_SHAPE, VIEW_DIST, isLaser, laneX, type ObstacleKind } from '../core/config.ts';
 import type { Sim } from '../core/sim.ts';
 import { moverLane, type Obstacle, type Pickup } from '../core/track.ts';
 import { holoMaterial } from './materials.ts';
@@ -9,6 +9,8 @@ import { bend } from './curve.ts';
 
 const RISE_TIME = 0.35;
 const hdr = (c: THREE.Color, k: number) => new THREE.Color(c.r * k, c.g * k, c.b * k);
+
+type Solid = 'block' | 'mover' | 'low' | 'high' | 'ramp';
 
 interface Live<T> {
   data: T;
@@ -23,9 +25,14 @@ export class Things {
     mover: new THREE.Color(),
     low: new THREE.Color(),
     high: new THREE.Color(),
+    ramp: new THREE.Color(),
+    beam: new THREE.Color(),
   };
-  private mats: Record<'block' | 'mover' | 'low' | 'high', THREE.ShaderMaterial>;
-  private geos: Record<'block' | 'mover' | 'low' | 'high', THREE.BufferGeometry>;
+  private mats: Record<Solid | 'beam', THREE.ShaderMaterial>;
+  private geos: Record<Solid, THREE.BufferGeometry>;
+  private beamGlow = bend(new THREE.MeshBasicMaterial({ toneMapped: false, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+  private boostMat = bend(new THREE.MeshBasicMaterial({ toneMapped: false, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+  private boostGeo: THREE.BufferGeometry;
   private laserCore = bend(new THREE.MeshBasicMaterial({ toneMapped: false }));
   private laserGlow = bend(new THREE.MeshBasicMaterial({ toneMapped: false, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false }));
   private underline = bend(new THREE.MeshBasicMaterial({ toneMapped: false }));
@@ -50,6 +57,8 @@ export class Things {
       mover: holoMaterial(this.colors.mover),
       low: holoMaterial(this.colors.low),
       high: holoMaterial(this.colors.high),
+      ramp: holoMaterial(this.colors.ramp),
+      beam: holoMaterial(this.colors.beam),
     };
     const w = LANE_W - 0.3;
     const box = (h: number, d: number) => {
@@ -62,7 +71,9 @@ export class Things {
       mover: box(OBSTACLE_SHAPE.mover.y1, OBSTACLE_SHAPE.mover.depth),
       low: box(OBSTACLE_SHAPE.low.y1, OBSTACLE_SHAPE.low.depth),
       high: box(OBSTACLE_SHAPE.high.y1 - OBSTACLE_SHAPE.high.y0, OBSTACLE_SHAPE.high.depth),
+      ramp: rampGeometry(LANE_W - 0.5, OBSTACLE_SHAPE.ramp.y1, OBSTACLE_SHAPE.ramp.depth),
     };
+    this.boostGeo = chevronGeometry();
   }
 
   reset() {
@@ -93,6 +104,23 @@ export class Things {
 
   private makeObstacle(o: Obstacle): THREE.Object3D {
     const kind = o.kind;
+    if (kind === 'beam') {
+      // The Sentinel's laser wall: a tall holographic slab with a shimmering glow around it.
+      const lanes = o.lane1 - o.lane0 + 1;
+      return this.acquire(`beam:${lanes}`, () => {
+        const g = new THREE.Group();
+        const width = lanes * LANE_W - 0.2;
+        const h = OBSTACLE_SHAPE.beam.y1;
+        const slab = new THREE.BoxGeometry(width, h, OBSTACLE_SHAPE.beam.depth);
+        slab.translate(0, h / 2, 0);
+        const body = new THREE.Mesh(slab, this.mats.beam);
+        body.name = 'body';
+        const glow = new THREE.Mesh(new THREE.PlaneGeometry(width + 0.8, h + 0.6).translate(0, h / 2, 0), this.beamGlow);
+        glow.name = 'glow';
+        g.add(glow, body);
+        return g;
+      });
+    }
     if (kind === 'laserLow' || kind === 'laserHigh') {
       const lanes = o.lane1 - o.lane0 + 1;
       return this.acquire(`${kind}:${lanes}`, () => {
@@ -114,7 +142,7 @@ export class Things {
         return g;
       });
     }
-    const k = kind as 'block' | 'mover' | 'low' | 'high';
+    const k = kind as Solid;
     return this.acquire(kind, () => {
       const g = new THREE.Group();
       const m = new THREE.Mesh(this.geos[k], this.mats[k]);
@@ -131,6 +159,17 @@ export class Things {
   }
 
   private makePickup(p: Pickup): THREE.Object3D {
+    if (p.kind === 'boost') {
+      return this.acquire('boost', () => {
+        const g = new THREE.Group();
+        const m = new THREE.Mesh(this.boostGeo, this.boostMat);
+        // Tilted up toward the camera a little, or flat on the floor they'd be a sliver.
+        m.rotation.x = 0.45;
+        m.position.y = 0.3;
+        g.add(m);
+        return g;
+      });
+    }
     if (p.kind === 'orb') {
       return this.acquire('orb', () => {
         const g = new THREE.Group();
@@ -165,6 +204,10 @@ export class Things {
     this.colors.mover.copy(c.accent);
     this.colors.low.copy(c.warm);
     this.colors.high.copy(c.secondary);
+    this.colors.ramp.copy(c.sunTop);
+    this.colors.beam.copy(c.accent);
+    this.beamGlow.color.copy(c.accent).multiplyScalar(0.8 + Math.random() * 0.4);
+    this.boostMat.color.copy(c.secondary).lerp(new THREE.Color(1, 1, 1), 0.2).multiplyScalar(1.1 + Math.sin(time * 14) * 0.35);
     for (const m of Object.values(this.mats)) {
       m.uniforms.uTime.value = time;
       m.uniforms.uPulse.value = pulse;
@@ -195,7 +238,14 @@ export class Things {
       const obj = live.obj;
       const rise = Math.min(1, (time - live.born) / RISE_TIME);
       const ease = 1 - Math.pow(1 - rise, 3);
-      if (o.kind === 'laserLow' || o.kind === 'laserHigh') {
+      if (o.kind === 'beam') {
+        obj.position.set((laneX(o.lane0) + laneX(o.lane1)) / 2, 0, z);
+        obj.scale.set(1, Math.max(0.01, ease), 1);
+        // Gone once it's behind you, and its glow switches off before it gets near enough to flood
+        // the screen with bloom.
+        obj.visible = z < 1.5;
+        obj.getObjectByName('glow')!.visible = z < -10;
+      } else if (o.kind === 'laserLow' || o.kind === 'laserHigh') {
         const y = (OBSTACLE_SHAPE[o.kind].y0 + OBSTACLE_SHAPE[o.kind].y1) / 2;
         obj.position.set((laneX(o.lane0) + laneX(o.lane1)) / 2, y * ease, z);
         obj.scale.set(ease, 1, 1);
@@ -227,6 +277,12 @@ export class Things {
         this.pickups.set(pk.id, live);
       }
       const obj = live.obj;
+      if (pk.kind === 'boost') {
+        // Flat on the floor, chevrons pointing down the track.
+        obj.position.set(laneX(pk.lane), 0.03, z);
+        obj.scale.setScalar(Math.min(1, (time - live.born) / RISE_TIME) || 0.01);
+        continue;
+      }
       let x = laneX(pk.lane);
       let y = pk.y + Math.sin(time * 4 + pk.id) * 0.08;
       let zz = z;
@@ -267,7 +323,47 @@ export class Things {
 
   /** Colour of an obstacle kind, for effects. */
   colorOf(kind: ObstacleKind) {
-    if (kind === 'laserLow' || kind === 'laserHigh') return this.laserGlow.color;
-    return this.colors[kind];
+    if (isLaser(kind) && kind !== 'beam') return this.laserGlow.color;
+    return this.colors[kind as keyof Things['colors']];
   }
+}
+
+/** A wedge: flush with the floor at the near end (+z), rising to `h` at the far end. Keeps box UVs for the holo edges. */
+function rampGeometry(w: number, h: number, d: number) {
+  const g = new THREE.BoxGeometry(w, h, d);
+  g.translate(0, h / 2, 0);
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) if (pos.getZ(i) > 0 && pos.getY(i) > h / 2) pos.setY(i, 0.02);
+  g.computeVertexNormals();
+  return g;
+}
+
+/** Three flat chevrons pointing up the track (−z), lying on the floor. */
+function chevronGeometry() {
+  const shape = new THREE.Shape();
+  // One chevron in the xz plane (drawn in xy, then laid flat); tip toward −z.
+  shape.moveTo(-0.95, 0.3);
+  shape.lineTo(0, -0.45);
+  shape.lineTo(0.95, 0.3);
+  shape.lineTo(0.95, 0.8);
+  shape.lineTo(0, 0.05);
+  shape.lineTo(-0.95, 0.8);
+  shape.closePath();
+  const parts: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < 3; i++) {
+    const g = new THREE.ShapeGeometry(shape);
+    g.rotateX(Math.PI / 2);
+    g.translate(0, 0, -i * 0.95 + 0.95);
+    parts.push(g);
+  }
+  const merged = new THREE.BufferGeometry();
+  const arrays = parts.map((p) => p.toNonIndexed().attributes.position.array as Float32Array);
+  const all = new Float32Array(arrays.reduce((n, a) => n + a.length, 0));
+  let o = 0;
+  for (const a of arrays) {
+    all.set(a, o);
+    o += a.length;
+  }
+  merged.setAttribute('position', new THREE.BufferAttribute(all, 3));
+  return merged;
 }

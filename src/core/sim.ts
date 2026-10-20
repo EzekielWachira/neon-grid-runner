@@ -2,6 +2,7 @@
 // The renderer and audio read this state and react to `events`; scripts/verify-runs.ts runs it headless.
 import {
   BEAT,
+  BOOST_TIME,
   FAST_FALL_VY,
   GRAVITY,
   INPUT_BUFFER,
@@ -15,12 +16,16 @@ import {
   SLIDE_TIME,
   VIEW_DIST,
   SPEED_START,
+  RAMP_VY,
+  distanceAt,
+  isLaser,
   laneX,
   sectorAt,
   speedAt,
   type PowerKind,
 } from './config.ts';
-import { Track, moverLane, type Obstacle, type Pickup } from './track.ts';
+import { TRACK_VERSION, Track, moverLane, type Obstacle, type Pickup } from './track.ts';
+import { zoneState, type ZoneState } from './zones.ts';
 import {
   GLIDE_GRAVITY,
   GLIDE_MIN_Y,
@@ -53,7 +58,24 @@ export type SimEvent =
   | { type: 'pulse'; obstacle: Obstacle | null }
   | { type: 'phase' }
   | { type: 'phaseThrough'; obstacle: Obstacle }
-  | { type: 'abilityReady' };
+  | { type: 'abilityReady' }
+  | { type: 'ramp' }
+  | { type: 'boost'; pickup: Pickup }
+  | { type: 'tunnel'; on: boolean }
+  | { type: 'flip'; on: boolean }
+  | { type: 'sentinelWarn' }
+  | { type: 'sentinelStart' }
+  | { type: 'sentinelClear'; bonus: number };
+
+export interface SimOptions {
+  /** Track version the run is on (older recordings replay on the track they were made on). */
+  trk?: number;
+  /** Practice: start at this song time, with a clear run-up of PRACTICE_LEAD beats. */
+  startAt?: number;
+}
+
+/** Beats of empty track at the start of a practice attempt. */
+export const PRACTICE_LEAD = 4;
 
 /** The simulation advances in fixed ticks so a recorded run replays identically at any frame rate. */
 export const SIM_STEP = 1 / 240;
@@ -103,6 +125,12 @@ export class Sim {
   phase = 0;
   /** Seconds of glide left (Manta). */
   glide = 0;
+  /** Seconds of boost-pad score doubling left. */
+  boost = 0;
+  /** Which set pieces are active (tunnel, flip, Sentinel). */
+  zone: ZoneState;
+  readonly trk: number;
+  readonly startAt: number;
   private glideUsed = false;
   /** Song time the queued pulse fires at, or -1. */
   private fireAt = -1;
@@ -114,7 +142,33 @@ export class Sim {
   /** Every input this run, for ghosts and replays. */
   readonly log: InputEntry[] = [];
   /** Per-run counters for missions. */
-  stats = { jumps: 0, slides: 0, powers: 0, smashes: 0, closeMoves: 0, magnets: 0, overdrives: 0, shields: 0, abilities: 0 };
+  stats = {
+    jumps: 0,
+    slides: 0,
+    powers: 0,
+    smashes: 0,
+    closeMoves: 0,
+    magnets: 0,
+    overdrives: 0,
+    shields: 0,
+    abilities: 0,
+    sideMisses: 0,
+    glides: 0,
+    pulseHits: 0,
+    phaseThroughs: 0,
+    ramps: 0,
+    boosts: 0,
+    sentinels: 0,
+    flips: 0,
+    /** Sectors finished without a jump, or without a power-up. */
+    noJumpSectors: 0,
+    noPowerSectors: 0,
+    /** Most obstacles smashed during a single overdrive. */
+    bestOverdriveSmash: 0,
+  };
+  private sectorJumps = 0;
+  private sectorPowers = 0;
+  private overdriveSmash = 0;
   /** Distance at the first power-up pickup (null until one is taken). */
   firstPowerAt: number | null = null;
 
@@ -132,14 +186,35 @@ export class Sim {
   readonly seed: number;
 
   /** With `replay`, the sim plays back those inputs and ignores live ones (a ghost). */
-  constructor(seed: number, replay: InputEntry[] | null = null, ship: ShipId = 'delta') {
+  constructor(seed: number, replay: InputEntry[] | null = null, ship: ShipId = 'delta', opts: SimOptions = {}) {
     this.seed = seed;
     this.replay = replay;
     this.ship = ship;
     this.cls = SHIP_CLASSES[ship];
+    this.trk = opts.trk ?? TRACK_VERSION;
     this.abilityCharge = this.cls.ability === 'pulse' ? 0.5 : this.cls.ability === 'phase' ? 1 : 0;
-    this.track = new Track(seed, this.cls.noPower);
+    this.track = new Track(seed, this.cls.noPower, this.trk);
     this.track.generateUntil(VIEW_DIST / SPEED_START + 2);
+    this.startAt = opts.startAt ?? 0;
+    if (opts.startAt) {
+      this.ticks = Math.round(opts.startAt / SIM_STEP);
+      this.t = this.prevT = this.ticks * SIM_STEP;
+      this.speed = speedAt(this.t);
+      this.distance = distanceAt(this.t);
+      this.sector = sectorAt(this.t);
+      this.track.generateUntil(this.t + VIEW_DIST / SPEED_START + 2);
+      this.track.clearBefore(this.t + PRACTICE_LEAD * BEAT);
+    }
+    this.zone = this.zoneAt(this.t);
+  }
+
+  private zoneAt(t: number): ZoneState {
+    return this.track.features ? zoneState(t) : { sector: sectorAt(t), tunnel: false, flipped: false, sentinel: 'none' };
+  }
+
+  /** The camera is rolled over: the renderer flips the view and live controls follow the screen. */
+  get flipped() {
+    return this.zone.flipped;
   }
 
   /** Full duration of a power-up for this ship. */
@@ -201,6 +276,7 @@ export class Sim {
     if (this.cls.glide && !this.grounded && !this.glideUsed && this.y > GLIDE_MIN_Y) {
       this.glideUsed = true;
       this.glide = GLIDE_TIME;
+      this.stats.glides++;
       this.vy = Math.max(this.vy, 0.6);
       this.events.push({ type: 'glide' });
       return;
@@ -232,7 +308,7 @@ export class Sim {
     const x1 = cx + this.cls.halfW;
     let target: Obstacle | null = null;
     for (const o of this.track.obstacles) {
-      if (o.done || o.time <= this.t || o.kind === 'laserLow' || o.kind === 'laserHigh') continue;
+      if (o.done || o.time <= this.t || isLaser(o.kind) || o.kind === 'ramp') continue;
       if ((o.time - this.t) * this.speed > PULSE_RANGE) break;
       const [ox0, ox1] = this.obstacleX(o, o.time);
       if (x1 > ox0 && x0 < ox1) {
@@ -242,6 +318,7 @@ export class Sim {
     }
     if (target) {
       target.done = 'smashed';
+      this.stats.pulseHits++;
       this.addScore(25 * this.mult);
     }
     this.events.push({ type: 'pulse', obstacle: target });
@@ -308,10 +385,16 @@ export class Sim {
       this.events.push({ type: 'mult', mult: this.mult });
     }
 
-    this.addScore(this.speed * dt * 0.1 * this.mult * (this.powers.overdrive > 0 ? 2 : 1));
+    this.boost = Math.max(0, this.boost - dt);
+    this.addScore(this.speed * dt * 0.1 * this.mult * (this.powers.overdrive > 0 ? 2 : 1) * (this.boost > 0 ? 2 : 1));
+
+    this.updateZones(t);
 
     const sector = sectorAt(t);
     if (sector !== this.sector) {
+      if (this.sectorJumps === 0) this.stats.noJumpSectors++;
+      if (this.sectorPowers === 0) this.stats.noPowerSectors++;
+      this.sectorJumps = this.sectorPowers = 0;
       this.sector = sector;
       this.events.push({ type: 'sector', sector });
       // Phase recharges at the start of every sector.
@@ -320,6 +403,28 @@ export class Sim {
         this.events.push({ type: 'abilityReady' });
       }
     }
+  }
+
+  private updateZones(t: number) {
+    const z = this.zoneAt(t);
+    const p = this.zone;
+    if (z.sentinel !== p.sentinel) {
+      if (z.sentinel === 'warn') this.events.push({ type: 'sentinelWarn' });
+      else if (z.sentinel === 'active') this.events.push({ type: 'sentinelStart' });
+      else if (p.sentinel === 'active') {
+        // Survived the whole barrage.
+        const bonus = Math.round((1000 + 500 * z.sector) * this.cls.score);
+        this.score += bonus;
+        this.stats.sentinels++;
+        this.events.push({ type: 'sentinelClear', bonus });
+      }
+    }
+    if (z.tunnel !== p.tunnel) this.events.push({ type: 'tunnel', on: z.tunnel });
+    if (z.flipped !== p.flipped) {
+      if (!z.flipped) this.stats.flips++;
+      this.events.push({ type: 'flip', on: z.flipped });
+    }
+    this.zone = z;
   }
 
   private updateAbility(dt: number) {
@@ -342,6 +447,7 @@ export class Sim {
       this.glideUsed = false;
       this.jumpAt = this.t;
       this.stats.jumps++;
+      this.sectorJumps++;
       this.events.push({ type: 'jump' });
     }
     if (this.slideBuffer > 0 && this.grounded) {
@@ -407,6 +513,11 @@ export class Sim {
       }
       const [ox0, ox1] = this.obstacleX(o);
       const xHit = px1 > ox0 && px0 < ox1;
+      if (o.kind === 'ramp') {
+        if (xHit && this.y < 0.3) this.launch();
+        if (xHit || o.time + w < this.t) o.done = 'passed';
+        continue;
+      }
       const yHit = py1 > shape.y0 && py0 < shape.y1;
       if (xHit && yHit) {
         this.collide(o);
@@ -419,18 +530,32 @@ export class Sim {
     }
   }
 
+  /** Ramp: thrown high enough to clear a wall of blocks one beat later. */
+  private launch() {
+    this.grounded = false;
+    this.y = Math.max(this.y, 0.01);
+    this.vy = RAMP_VY;
+    this.slideTimer = 0;
+    this.slideBuffer = 0;
+    this.glideUsed = false;
+    this.jumpAt = this.t;
+    this.stats.ramps++;
+    this.events.push({ type: 'ramp' });
+  }
+
   private checkNearMiss(o: Obstacle, xHit: boolean, ox0: number, ox1: number, px0: number, px1: number) {
     let style: 'side' | 'over' | 'under' | null = null;
     if (xHit) {
       if (o.kind === 'low' || o.kind === 'laserLow') style = this.t - this.jumpAt < JUMP_LATE ? 'over' : null;
       else if (o.kind === 'high' || o.kind === 'laserHigh') style = this.t - this.slideAt < SLIDE_LATE ? 'under' : null;
-    } else if (o.kind !== 'laserLow' && o.kind !== 'laserHigh') {
+    } else if (!isLaser(o.kind)) {
       const gap = Math.max(ox0 - px1, px0 - ox1);
       if (gap < 0.85 && this.t - this.laneAt < LATE_DODGE) style = 'side';
     }
     if (!style) return;
     this.nearMisses++;
     if (style !== 'side') this.stats.closeMoves++;
+    else this.stats.sideMisses++;
     this.bumpCombo();
     const bonus = Math.round(50 * this.mult * this.cls.score);
     this.score += bonus;
@@ -441,10 +566,13 @@ export class Sim {
     if (this.powers.overdrive > 0) {
       o.done = 'smashed';
       this.stats.smashes++;
+      this.overdriveSmash++;
+      this.stats.bestOverdriveSmash = Math.max(this.stats.bestOverdriveSmash, this.overdriveSmash);
       this.addScore(25 * this.mult);
       this.events.push({ type: 'smash', obstacle: o });
     } else if (this.phase > 0) {
       o.done = 'passed';
+      this.stats.phaseThroughs++;
       this.events.push({ type: 'phaseThrough', obstacle: o });
     } else if (this.invuln > 0) {
       o.done = 'passed';
@@ -478,14 +606,20 @@ export class Sim {
       const reachY = magnet && p.kind === 'orb' ? 99 : 1.15;
       if (dx > reachX || Math.abs(p.y - cy) > reachY) continue;
       p.taken = true;
-      if (p.kind === 'orb') {
+      if (p.kind === 'boost') {
+        this.boost = BOOST_TIME;
+        this.stats.boosts++;
+        this.events.push({ type: 'boost', pickup: p });
+      } else if (p.kind === 'orb') {
         this.orbs++;
         this.bumpCombo();
         this.addScore(10 * this.mult);
         this.events.push({ type: 'orb', pickup: p, combo: this.combo });
       } else {
         this.powers[p.kind] = this.powerMax(p.kind);
+        if (p.kind === 'overdrive') this.overdriveSmash = 0;
         this.stats.powers++;
+        this.sectorPowers++;
         this.stats[p.kind === 'shield' ? 'shields' : p.kind === 'magnet' ? 'magnets' : 'overdrives']++;
         this.firstPowerAt ??= this.distance;
         this.addScore(100);

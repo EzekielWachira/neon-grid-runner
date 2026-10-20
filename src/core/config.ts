@@ -38,7 +38,7 @@ export const PLAYER = {
   slideTop: 0.7,
 };
 
-export type ObstacleKind = 'block' | 'low' | 'high' | 'laserLow' | 'laserHigh' | 'mover';
+export type ObstacleKind = 'block' | 'low' | 'high' | 'laserLow' | 'laserHigh' | 'mover' | 'beam' | 'ramp';
 
 /** Vertical extent and depth of each obstacle kind. */
 export const OBSTACLE_SHAPE: Record<ObstacleKind, { y0: number; y1: number; depth: number; pad: number }> = {
@@ -48,10 +48,22 @@ export const OBSTACLE_SHAPE: Record<ObstacleKind, { y0: number; y1: number; dept
   high: { y0: 0.95, y1: 2.8, depth: 0.6, pad: 0.15 },
   laserLow: { y0: 0.35, y1: 0.7, depth: 0.25, pad: 0 },
   laserHigh: { y0: 0.95, y1: 1.3, depth: 0.25, pad: 0 },
+  /** The Sentinel's laser walls: too tall to jump. */
+  beam: { y0: 0, y1: 4.6, depth: 0.3, pad: 0.1 },
+  /** Not an obstacle: running onto it launches you (see RAMP_VY). */
+  ramp: { y0: 0, y1: 0.45, depth: 2, pad: 0.2 },
 };
+/** Obstacles that are lasers (the pulse cannon can't break them). */
+export const isLaser = (k: ObstacleKind) => k === 'laserLow' || k === 'laserHigh' || k === 'beam';
+
+/** A ramp throws you so you peak exactly one beat later, high over the wall it guards. */
+export const RAMP_VY = GRAVITY * BEAT;
+export const BOOST_TIME = 2.5;
 
 export type PowerKind = 'shield' | 'magnet' | 'overdrive';
 export const POWER_TIME: Record<PowerKind, number> = { shield: 15, magnet: 10, overdrive: 6 };
 
 export const speedAt = (t: number) => SPEED_START + (SPEED_MAX - SPEED_START) * (1 - Math.exp(-Math.max(0, t) / SPEED_RAMP));
+/** Distance covered by song time t (the integral of speedAt), for runs that start part-way in. */
+export const distanceAt = (t: number) => SPEED_START * t + (SPEED_MAX - SPEED_START) * (t - SPEED_RAMP * (1 - Math.exp(-t / SPEED_RAMP)));
 export const sectorAt = (t: number) => Math.max(0, Math.floor(t / BEAT / SECTOR_BEATS));

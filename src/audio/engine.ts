@@ -1,6 +1,7 @@
 // Synthesised synthwave soundtrack + sound effects. The AudioContext clock is also the game's
 // master clock while running, so obstacles land exactly on the beat (and pausing just suspends it).
-import { BEAT, INTRO_BEATS } from '../core/config.ts';
+import { BEAT, INTRO_BEATS, SECTOR_BEATS } from '../core/config.ts';
+import { SENTINEL, SENTINEL_WARN, zoneState } from '../core/zones.ts';
 
 const STEP = BEAT / 4;
 const LOOKAHEAD = 0.14;
@@ -35,6 +36,9 @@ export class AudioEngine {
   private step = 0;
   private playing = false;
   layer = 0;
+  /** Set pieces shape the music (tunnel muffle, Sentinel riser and drop); off for old-track replays. */
+  setPieces = true;
+  private tunnelOn = false;
 
   /** Must be called from a user gesture. Returns false if Web Audio is unavailable. */
   init(): boolean {
@@ -116,6 +120,7 @@ export class AudioEngine {
     this.step = 0;
     this.playing = true;
     this.layer = 0;
+    this.tunnelOn = false;
     const t = this.ctx.currentTime;
     this.musicFilter.frequency.cancelScheduledValues(t);
     this.musicFilter.frequency.setValueAtTime(18000, t);
@@ -176,6 +181,29 @@ export class AudioEngine {
       const i = ARP[(n / (L >= 4 ? 1 : 2)) % ARP.length | 0];
       this.lead(t, chord.notes[i] + 12 + (bar % 4 === 3 && s16 > 8 ? 12 : 0));
     }
+    if (this.setPieces) this.setPieceStep(n, t, chord);
+  }
+
+  /** Tunnels muffle the mix; the Sentinel gets a snare-roll riser, then a drop with a siren and sub bass. */
+  private setPieceStep(n: number, t: number, chord: (typeof CHORDS)[number]) {
+    const z = zoneState(n * STEP + 1e-6);
+    if (z.tunnel !== this.tunnelOn) {
+      this.tunnelOn = z.tunnel;
+      this.musicFilter.frequency.setTargetAtTime(z.tunnel ? 1600 : 18000, t, 0.2);
+    }
+    const b = (n / 4) % SECTOR_BEATS;
+    if (z.sentinel === 'warn') {
+      const p = (b - (SENTINEL[0] - SENTINEL_WARN)) / SENTINEL_WARN;
+      if (b === SENTINEL[0] - SENTINEL_WARN) this.riser(t, SENTINEL_WARN * BEAT);
+      if (p >= 0.5 || n % 2 === 0) this.snareHit(t, 0.12 + 0.45 * p);
+    } else if (z.sentinel === 'active') {
+      if (b === SENTINEL[0]) this.crash(t);
+      if (n % 2 === 0) {
+        this.sub(t, chord.root - 12);
+        const hi = (n / 2) % 2 ? chord.notes[2] : chord.notes[0];
+        this.siren(t, hi + 24);
+      }
+    }
   }
 
   // ---------------------------------------------------------------- instruments
@@ -234,6 +262,64 @@ export class AudioEngine {
     tg.connect(this.musicBus);
     this.env(tg, t, 0.3, 0.002, 0.1);
     this.osc('triangle', 190, t, 0.12, tg);
+  }
+
+  private snareHit(t: number, vol: number) {
+    const bp = this.ctx!.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 2200;
+    const g = this.ctx!.createGain();
+    bp.connect(g).connect(this.musicBus);
+    this.env(g, t, vol, 0.002, 0.09);
+    this.noiseSrc(t, 0.1, bp);
+  }
+
+  private riser(t: number, dur: number) {
+    const f = this.ctx!.createBiquadFilter();
+    f.type = 'bandpass';
+    f.Q.value = 3;
+    f.frequency.setValueAtTime(300, t);
+    f.frequency.exponentialRampToValueAtTime(9000, t + dur);
+    const g = this.ctx!.createGain();
+    f.connect(g).connect(this.musicBus);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.35, t + dur);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.05);
+    this.noiseSrc(t, dur + 0.1, f);
+  }
+
+  private crash(t: number) {
+    const f = this.ctx!.createBiquadFilter();
+    f.type = 'highpass';
+    f.frequency.value = 4000;
+    const g = this.ctx!.createGain();
+    f.connect(g).connect(this.musicBus);
+    g.connect(this.delaySend);
+    this.env(g, t, 0.4, 0.003, 1.6);
+    this.noiseSrc(t, 1.7, f);
+  }
+
+  /** A deep sine an octave under the bass, pumping with the sidechain. */
+  private sub(t: number, midi: number) {
+    const g = this.ctx!.createGain();
+    g.connect(this.duck);
+    this.env(g, t, 0.55, 0.004, STEP * 1.9);
+    this.osc('sine', mtof(midi), t, STEP * 2, g);
+  }
+
+  /** The Sentinel's siren: a detuned square that swoops up into each note. */
+  private siren(t: number, midi: number) {
+    const f = this.ctx!.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.setValueAtTime(2600, t);
+    const g = this.ctx!.createGain();
+    f.connect(g).connect(this.musicBus);
+    g.connect(this.delaySend);
+    this.env(g, t, 0.06, 0.01, STEP * 1.8);
+    for (const d of [-12, 12]) {
+      const o = this.osc('square', mtof(midi - 2), t, STEP * 2, f, d);
+      o.frequency.exponentialRampToValueAtTime(mtof(midi), t + 0.05);
+    }
   }
 
   private clap(t: number) {
@@ -406,6 +492,26 @@ export class AudioEngine {
   glide() {
     this.sfxNoise(0.5, 0.12, 900, 2600, 'bandpass');
     this.sfxTone('triangle', 520, 660, 0.3, 0.06);
+  }
+  ramp() {
+    this.sfxTone('sawtooth', 160, 900, 0.35, 0.1);
+    this.sfxNoise(0.4, 0.18, 600, 6000, 'bandpass');
+  }
+  boost() {
+    this.sfxTone('square', 600, 1800, 0.18, 0.08);
+    this.sfxTone('sine', 1200, 2400, 0.25, 0.06, 0.05);
+  }
+  flip() {
+    this.sfxNoise(0.6, 0.25, 8000, 300, 'bandpass');
+    this.sfxTone('sine', 900, 220, 0.5, 0.1);
+  }
+  sentinelWarn() {
+    for (let i = 0; i < 3; i++) this.sfxTone('square', 440, 440, 0.12, 0.08, i * 0.24);
+  }
+  sentinelClear() {
+    this.sfxNoise(1.4, 0.6, 2500, 50);
+    this.sfxTone('sine', 120, 30, 1.2, 0.4);
+    [0, 4, 7, 12].forEach((s, i) => this.sfxTone('square', mtof(76 + s), mtof(76 + s), 0.14, 0.06, 0.2 + i * 0.07));
   }
   abilityReady() {
     this.sfxTone('triangle', mtof(84), mtof(84), 0.08, 0.07);

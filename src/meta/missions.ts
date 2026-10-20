@@ -15,6 +15,8 @@ export type MissionKind =
   | 'nearStreak'
   | 'noPowerDist'
   | 'dailyScore'
+  | 'sentinelRun'
+  | 'rampRun'
   | 'smashTotal'
   | 'distTotal'
   | 'orbsTotal';
@@ -56,6 +58,8 @@ const SPECS: Record<MissionKind, Spec> = {
   powerRun: { base: 2, grow: 0.25, round: 1, text: (n) => `Grab ${n} power-ups in one run` },
   nearStreak: { base: 2, grow: 0.15, round: 1, minRank: 2, text: (n) => `Get ${n} near misses within 5 seconds` },
   noPowerDist: { base: 1200, grow: 0.4, round: 100, minRank: 2, text: (n) => `Run ${fmt(n)} m before touching a power-up` },
+  sentinelRun: { base: 1, grow: 0.15, round: 1, minRank: 2, text: (n) => `Survive ${n} Sentinel${n === 1 ? '' : 's'} in one run` },
+  rampRun: { base: 3, grow: 0.35, round: 1, text: (n) => `Launch off ${n} ramps in one run` },
   dailyScore: { base: 2500, grow: 0.5, round: 500, text: (n) => `Score ${fmt(n)} on a daily run` },
   smashTotal: { base: 5, grow: 0.5, round: 1, minRank: 2, total: true, text: (n) => `Smash ${n} obstacles in overdrive (total)` },
   distTotal: { base: 5000, grow: 0.6, round: 1000, total: true, text: (n) => `Travel ${fmt(n)} m in total` },
@@ -136,6 +140,10 @@ export class MissionRun {
         return this.bestStreak;
       case 'noPowerDist':
         return sim.firstPowerAt ?? sim.distance;
+      case 'sentinelRun':
+        return sim.stats.sentinels;
+      case 'rampRun':
+        return sim.stats.ramps;
       case 'dailyScore':
         return this.daily ? sim.score : 0;
       case 'smashTotal':

@@ -16,6 +16,7 @@ import { Fx } from './fx.ts';
 import type { Loadout, ShipId } from '../meta/garage.ts';
 import { bend, bendUniform, curveAt } from './curve.ts';
 import { PULSE_RANGE } from '../core/ships.ts';
+import { SetPieces } from './setpieces.ts';
 
 export type Quality = 'auto' | 'high' | 'medium' | 'low';
 export type ViewMode = 'title' | 'run' | 'dying' | 'paused' | 'garage';
@@ -52,6 +53,14 @@ export class View {
   private beam = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 1, 1, 1, 32).translate(0, 0, -0.5), this.beamMat);
   private beamLife = 0;
   private lastDemo = 0;
+  private setPieces = new SetPieces();
+  /** Camera roll for gravity flips (0 or π once settled). */
+  private roll = 0;
+  /** 0..1, eases in while inside a tunnel (the camera tucks in lower). */
+  private tunnelK = 0;
+  /** 0..1 while the Sentinel is up: the sky darkens behind it. */
+  private bossK = 0;
+  private lastBeat = -1;
 
   private quality: Quality = 'auto';
   private ratio = 1.5;
@@ -88,7 +97,7 @@ export class View {
     this.ghostShip.group.visible = false;
     this.beam.visible = false;
     this.beam.frustumCulled = false;
-    this.scene.add(this.beam);
+    this.scene.add(this.beam, this.setPieces.group);
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
@@ -178,6 +187,9 @@ export class View {
     this.shake = 0;
     this.aberration = 0;
     this.beamLife = 0;
+    this.roll = 0;
+    this.tunnelK = 0;
+    this.bossK = 0;
   }
 
   /** Fires the pulse bolt from the ship's nose to `toZ` (negative is ahead). */
@@ -283,6 +295,39 @@ export class View {
         this.fx.burst(p, this.things.colorOf(e.obstacle.kind), 30, 8, 0.5, 0.5);
         break;
       }
+      case 'ramp': {
+        this.fx.burst(this.tmp.copy(shipPos).setY(0.1), c.sunTop, 40, 9, 0.5, 0.5, { gravity: 10 });
+        this.fovKick = Math.max(this.fovKick, 7);
+        this.addShake(0.2);
+        break;
+      }
+      case 'boost': {
+        this.fx.burst(this.tmp.copy(shipPos).setY(0.2), c.secondary, 36, 8, 0.45, 0.4, { up: 2 });
+        this.fovKick = Math.max(this.fovKick, 8);
+        this.aberration = Math.max(this.aberration, 0.012);
+        break;
+      }
+      case 'flip': {
+        this.fovKick = Math.max(this.fovKick, 10);
+        this.aberration = Math.max(this.aberration, 0.03);
+        this.doFlash(c.accent, 0.25);
+        break;
+      }
+      case 'sentinelWarn': {
+        this.doFlash(c.warm, 0.2);
+        this.addShake(0.3);
+        break;
+      }
+      case 'sentinelClear': {
+        const at = this.setPieces.sentinelPos(new THREE.Vector3());
+        this.fx.burst(at, c.warm, 160, 40, 6, 2.2, { flow: false, gravity: 8 });
+        this.fx.burst(at, WHITE, 60, 60, 4, 1.2, { flow: false });
+        this.fx.burst(at, c.accent, 90, 30, 7, 2.6, { flow: false });
+        this.doFlash(WHITE, 0.45);
+        this.addShake(0.9);
+        this.fovKick = 12;
+        break;
+      }
       case 'glide': {
         this.fx.burst(this.tmp.copy(shipPos), c.secondary, 30, 6, 0.4, 0.5, { up: -3 });
         break;
@@ -330,7 +375,12 @@ export class View {
     const speedK = (sim.speed - SPEED_START) / (SPEED_MAX - SPEED_START);
     const od = sim.powers.overdrive > 0;
 
-    this.world.update(p, this.offset, dt, sim.speed, pulse, phase, moving ? Math.max(od ? 1 : 0, (speedK - 0.35) * 1.5) : 0, time);
+    this.world.update(p, this.offset, dt, sim.speed, pulse, phase, moving ? Math.max(od || sim.boost > 0 ? 1 : 0, (speedK - 0.35) * 1.5) : 0, time);
+    // The Sentinel flashes as it fires each volley.
+    const beatIdx = Math.floor(beat);
+    if (beatIdx !== this.lastBeat && sim.zone.sentinel === 'active' && mode === 'run') this.setPieces.onVolley();
+    this.lastBeat = beatIdx;
+    this.setPieces.update(sim, p, dt, time, this.offset, pulse, !garage);
     (this.scene.fog as THREE.Fog).color.copy(fogUniforms.uFog.value);
     this.ship.update(sim, p, dt, time, flow, mode !== 'dying', pulse, garage);
     this.things.group.visible = !garage;
@@ -433,9 +483,10 @@ export class View {
           fov = 56;
           break;
         default:
-          pos = this.tmp.set(sx * 0.55, 3.1 + sy * 0.35, 7.4 - speedK * 0.9);
+          // Tucks in lower inside tunnels, under the ceiling.
+          pos = this.tmp.set(sx * 0.55, 3.1 - this.tunnelK * 0.8 + sy * 0.35, 7.4 - speedK * 0.9 - this.tunnelK * 0.8);
           look = new THREE.Vector3(sx * 0.72, 1.15 + sy * 0.22, -14);
-          fov = 66 + speedK * 12 + (od ? 8 : 0);
+          fov = 66 + speedK * 12 + (od || sim.boost > 0 ? 8 : 0) - this.tunnelK * 4;
       }
       if (cut) {
         this.camPos.copy(pos);
@@ -464,8 +515,14 @@ export class View {
     const sh = this.shake * 0.35;
     this.camera.position.set(this.camPos.x + (Math.random() - 0.5) * sh, this.camPos.y + (Math.random() - 0.5) * sh, this.camPos.z);
     this.camera.lookAt(this.camLook);
+    // Gravity flip: roll the whole view over (about a beat), so the ship rides the tunnel ceiling.
+    const inPlay = mode !== 'title' && !garage;
+    this.roll += ((inPlay && sim.flipped ? Math.PI : 0) - this.roll) * (1 - Math.exp(-dt * 7));
+    this.tunnelK += ((inPlay && sim.zone.tunnel ? 1 : 0) - this.tunnelK) * (1 - Math.exp(-dt * 3));
+    this.bossK += ((sim.zone.sentinel !== 'none' && mode !== 'garage' ? 1 : 0) - this.bossK) * (1 - Math.exp(-dt * 2));
+    this.world.enclosed = Math.max(this.tunnelK, this.bossK * 0.8);
     // Lean slightly into the curve ahead.
-    this.camera.rotateZ((mode === 'title' || garage ? 0 : -sim.bank * 0.07) - bendUniform.value.x * 40);
+    this.camera.rotateZ((mode === 'title' || garage ? 0 : -sim.bank * 0.07) - bendUniform.value.x * 40 + this.roll);
 
     // Post.
     this.flash *= Math.exp(-dt * 4.5);
