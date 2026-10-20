@@ -76,3 +76,7 @@ In the replay theatre: `Space` play/pause, `←`/`→` seek 5 s, `C` camera, `H`
 ## Ghost links
 
 `…/#ghost=<data>` opens a challenge card on the title screen. The data carries the seed, the input log, the score, the runner's callsign (set in Settings) and their ship. You race in the same ship, lent to you if you don't own it, because the ship's rules are part of the simulation. Links from before ship classes (`v: 1`) replay with Delta rules, which are exactly the old rules.
+
+## License
+
+[MIT](LICENSE.md) © 2026 Ezekiel Wachira
