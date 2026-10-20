@@ -1,5 +1,5 @@
-// Keyboard, touch swipes and gamepads, all mapped to the same five actions.
-export type Action = 'left' | 'right' | 'jump' | 'slide' | 'pause';
+// Keyboard, touch swipes and gamepads, all mapped to the same six actions.
+export type Action = 'left' | 'right' | 'jump' | 'slide' | 'ability' | 'pause';
 
 const KEYS: Record<string, Action> = {
   ArrowLeft: 'left',
@@ -11,6 +11,10 @@ const KEYS: Record<string, Action> = {
   Space: 'jump',
   ArrowDown: 'slide',
   KeyS: 'slide',
+  KeyE: 'ability',
+  KeyF: 'ability',
+  ShiftLeft: 'ability',
+  ShiftRight: 'ability',
   Escape: 'pause',
   KeyP: 'pause',
 };
@@ -62,7 +66,7 @@ export class Input {
     target.addEventListener('pointercancel', () => (this.touch = null));
   }
 
-  /** Polls gamepads (call once per frame). D-pad/stick to steer, A jump, B slide, Start pause. */
+  /** Polls gamepads (call once per frame). D-pad/stick to steer, A jump, B slide, X/Y/bumpers ability, Start pause. */
   poll() {
     if (!this.enabled || !navigator.getGamepads) return;
     const pad = [...navigator.getGamepads()].find((p) => p && p.connected);
@@ -74,6 +78,10 @@ export class Input {
       [12, 'jump'],
       [1, 'slide'],
       [13, 'slide'],
+      [2, 'ability'],
+      [3, 'ability'],
+      [4, 'ability'],
+      [5, 'ability'],
       [9, 'pause'],
     ];
     for (const [i, a] of map) {

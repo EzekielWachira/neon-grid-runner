@@ -18,6 +18,7 @@
       <div class="chips">
         <span id="rank-chip" class="chip rank"></span>
         <span id="credit-chip" class="chip credits"></span>
+        <span id="ship-chip" class="chip ship"></span>
       </div>
       <div class="title-wrap">
         <h1 class="logo">
@@ -49,7 +50,7 @@
         <p class="best">Best <b id="best">0</b></p>
       </div>
       <div class="help">
-        <span class="keys-help"><kbd>←</kbd><kbd>→</kbd> steer · <kbd>↑</kbd>/<kbd>Space</kbd> jump · <kbd>↓</kbd> slide · <kbd>Esc</kbd> pause · gamepad works too</span>
+        <span class="keys-help"><kbd>←</kbd><kbd>→</kbd> steer · <kbd>↑</kbd>/<kbd>Space</kbd> jump · <kbd>↓</kbd> slide · <kbd>E</kbd> ability · <kbd>Esc</kbd> pause · gamepad works too</span>
         <span class="touch-help">Swipe ← → to steer · swipe ↑ or tap to jump · swipe ↓ to slide</span>
       </div>
     </section>
@@ -85,6 +86,10 @@
       <div id="ghost-tag" class="ghost-tag"></div>
       <div id="toast" class="toast"></div>
       <div id="banner" class="banner"></div>
+      <button id="ability" class="ability" hidden aria-label="Use ability">
+        <span id="ability-name"></span>
+        <kbd id="ability-key">E</kbd>
+      </button>
     </section>
 
     <section id="pause" class="screen modal">
@@ -118,6 +123,7 @@
           <button id="retry" class="btn primary">Run again</button>
           <button id="watch" class="btn">Watch replay</button>
           <button id="share" class="btn">Share ghost</button>
+          <button id="card-btn" class="btn">Result card</button>
           <button id="menu" class="btn ghost">Menu</button>
         </div>
       </div>
@@ -167,8 +173,46 @@
           <button class="gar-tab btn ghost" data-tab="trail">Trails</button>
           <button class="gar-tab btn ghost" data-tab="color">Colours</button>
         </div>
+        <div id="gallery" class="gallery">
+          <div class="gd-top">
+            <button id="gd-prev" class="icon" aria-label="Previous ship"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg></button>
+            <div class="gd-title">
+              <b id="gd-name"></b>
+              <span><span id="gd-role"></span> · <span id="gd-index"></span></span>
+            </div>
+            <button id="gd-next" class="icon" aria-label="Next ship"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg></button>
+          </div>
+          <div id="gd-stats" class="gd-stats"></div>
+          <div class="gd-perk">
+            <b id="gd-perk-name"></b>
+            <p id="gd-perk"></p>
+            <small id="gd-key"></small>
+            <p class="gd-trade">Trade-off: <span id="gd-trade"></span></p>
+          </div>
+          <div class="gd-mastery">
+            <div><b id="gd-mastery"></b><span id="gd-best"></span></div>
+            <i><b id="gd-xp-bar"></b></i>
+            <small id="gd-xp"></small>
+          </div>
+          <button id="gd-action" class="btn primary small"></button>
+          <small id="gd-lock" class="gd-lock"></small>
+        </div>
         <div id="gar-items" class="gar-items"></div>
         <button id="garage-close" class="btn primary">Done</button>
+      </div>
+    </section>
+
+    <section id="card" class="screen modal">
+      <div class="panel card-panel">
+        <h2>Result card</h2>
+        <div class="card-frame"><img id="card-img" alt="Result card for this run" /></div>
+        <pre id="card-text" class="card-text"></pre>
+        <div class="menu row">
+          <button id="card-share" class="btn primary small" hidden>Share</button>
+          <button id="card-save" class="btn small">Save image</button>
+          <button id="card-copy" class="btn small">Copy text</button>
+          <button id="card-close" class="btn ghost small">Back</button>
+        </div>
       </div>
     </section>
 

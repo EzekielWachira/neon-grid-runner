@@ -17,7 +17,7 @@ export function encodeLog(log: InputEntry[]): string {
 export function decodeLog(s: string): InputEntry[] | null {
   if (typeof s !== 'string' || s.length > MAX_CHARS) return null;
   const out: InputEntry[] = [];
-  const re = /([0-9a-z]+)([LRJS])/g;
+  const re = /([0-9a-z]+)([LRJSA])/g;
   let tick = 0;
   let consumed = 0;
   for (let m = re.exec(s); m; m = re.exec(s)) {

@@ -14,7 +14,8 @@ import { Ship } from './ship.ts';
 import { Things } from './things.ts';
 import { Fx } from './fx.ts';
 import type { Loadout, ShipId } from '../meta/garage.ts';
-import { bendUniform, curveAt } from './curve.ts';
+import { bend, bendUniform, curveAt } from './curve.ts';
+import { PULSE_RANGE } from '../core/ships.ts';
 
 export type Quality = 'auto' | 'high' | 'medium' | 'low';
 export type ViewMode = 'title' | 'run' | 'dying' | 'paused' | 'garage';
@@ -46,6 +47,11 @@ export class View {
   private sparkPos = [new THREE.Vector3(), new THREE.Vector3()];
   private things = new Things();
   private fx = new Fx();
+  // The Interceptor's pulse: a bright bolt that flashes down the lane and fades.
+  private beamMat = bend(new THREE.MeshBasicMaterial({ toneMapped: false, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  private beam = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 1, 1, 1, 32).translate(0, 0, -0.5), this.beamMat);
+  private beamLife = 0;
+  private lastDemo = 0;
 
   private quality: Quality = 'auto';
   private ratio = 1.5;
@@ -80,6 +86,9 @@ export class View {
     for (const t of this.ship.trails) this.scene.add(t.mesh);
     this.scene.add(this.ghostShip.group, this.ghostShip.trails[0].mesh);
     this.ghostShip.group.visible = false;
+    this.beam.visible = false;
+    this.beam.frustumCulled = false;
+    this.scene.add(this.beam);
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
@@ -168,6 +177,21 @@ export class View {
     this.flash = 0;
     this.shake = 0;
     this.aberration = 0;
+    this.beamLife = 0;
+  }
+
+  /** Fires the pulse bolt from the ship's nose to `toZ` (negative is ahead). */
+  private fireBeam(from: THREE.Vector3, toZ: number, col: THREE.Color) {
+    this.beam.position.set(from.x, from.y + 0.1, from.z - 0.8);
+    this.beam.scale.set(1, 1, Math.max(1, this.beam.position.z - toZ));
+    this.beamMat.color.copy(col).multiplyScalar(3);
+    this.beamLife = 1;
+    // Seen from the chase camera the bolt is nearly end-on, so a spray of sparks along it sells the shot.
+    const len = this.beam.scale.z;
+    for (let i = 0; i < 40; i++) {
+      const z = this.beam.position.z - Math.random() * len;
+      this.fx.spawn(from.x + (Math.random() - 0.5) * 0.3, from.y + 0.1 + (Math.random() - 0.5) * 0.3, z, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3, 0, 0.35, 0.45, i % 3 ? col : WHITE);
+    }
   }
 
   // ---------------------------------------------------------------- events
@@ -231,6 +255,36 @@ export class View {
       case 'jump':
       case 'land': {
         this.fx.burst(this.tmp.set(sim.x, 0.1, 0.4), c.primary, e.type === 'land' ? 14 : 10, 5, 0.35, 0.35);
+        break;
+      }
+      case 'pulse': {
+        const hit = e.obstacle && this.things.obstaclePos(e.obstacle, sim, new THREE.Vector3());
+        this.fireBeam(shipPos, hit ? hit.z : -PULSE_RANGE, c.secondary);
+        this.fx.burst(this.tmp.copy(shipPos).setZ(shipPos.z - 1), c.secondary, 20, 6, 0.4, 0.3);
+        if (hit && e.obstacle) {
+          const col = this.things.colorOf(e.obstacle.kind);
+          this.fx.burst(hit, col, 80, 15, 0.9, 0.8, { gravity: 16, up: 4 });
+          this.fx.burst(hit, WHITE, 30, 20, 0.5, 0.4);
+        }
+        this.addShake(0.25);
+        this.fovKick = Math.max(this.fovKick, 4);
+        this.aberration = Math.max(this.aberration, 0.012);
+        break;
+      }
+      case 'phase': {
+        this.fx.burst(this.tmp.copy(shipPos), WHITE, 40, 9, 0.5, 0.5);
+        this.doFlash(c.secondary, 0.2);
+        this.aberration = Math.max(this.aberration, 0.03);
+        break;
+      }
+      case 'phaseThrough': {
+        const p = this.things.obstaclePos(e.obstacle, sim, this.tmp);
+        p.z = 0;
+        this.fx.burst(p, this.things.colorOf(e.obstacle.kind), 30, 8, 0.5, 0.5);
+        break;
+      }
+      case 'glide': {
+        this.fx.burst(this.tmp.copy(shipPos), c.secondary, 30, 6, 0.4, 0.5, { up: -3 });
         break;
       }
       case 'sector': {
@@ -307,6 +361,29 @@ export class View {
     if (od && mode === 'run') {
       this.fx.spawn(sim.x + (Math.random() - 0.5) * 1.6, 0.4 + sim.y + Math.random() * 0.6, 0.6, 0, 0, 6, 0.5, 0.5, c.warm);
     }
+    // Phase: the ship sheds pale motes while it's out of phase.
+    if (sim.phase > 0 && mode === 'run') {
+      this.fx.spawn(sim.x + (Math.random() - 0.5) * 2, 0.3 + sim.y + Math.random(), (Math.random() - 0.5) * 2, 0, 0.5, 4, 0.5, 0.3, WHITE);
+    }
+    // Glide: wingtip vapour.
+    if (sim.glide > 0 && mode === 'run') {
+      const [a, b] = this.ship.emitters(this.sparkPos);
+      for (const at of [a, b]) this.fx.spawn(at.x, at.y, at.z, 0, -0.5, 4, 0.4, 0.3, c.secondary);
+    }
+    // Garage: the Interceptor test-fires its cannon.
+    if (garage && this.ship.loadout.ship === 'twin') {
+      const d = this.ship.demo(time);
+      if (d > 0 && this.lastDemo === 0) {
+        this.fireBeam(this.ship.group.position, -30, c.secondary);
+        this.fx.burst(this.tmp.copy(this.ship.group.position).setZ(-1.2), c.secondary, 24, 6, 0.4, 0.3, { flow: false });
+      }
+      this.lastDemo = d;
+    }
+    this.beamLife = Math.max(0, this.beamLife - dt * (mode === 'paused' ? 0 : 5));
+    this.beam.visible = this.beamLife > 0;
+    this.beamMat.opacity = this.beamLife;
+    this.beam.scale.x = this.beam.scale.y = 0.5 + this.beamLife;
+
     // Paused (incl. photo mode) freezes effects in place while the camera can still move.
     this.fx.update(mode === 'paused' ? 0 : mode === 'dying' ? dt * 0.6 : dt, flow);
 

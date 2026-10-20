@@ -21,6 +21,19 @@ import {
   type PowerKind,
 } from './config.ts';
 import { Track, moverLane, type Obstacle, type Pickup } from './track.ts';
+import {
+  GLIDE_GRAVITY,
+  GLIDE_MIN_Y,
+  GLIDE_SINK,
+  GLIDE_TIME,
+  PHASE_TIME,
+  PULSE_CHARGE,
+  PULSE_GRID,
+  PULSE_RANGE,
+  SHIP_CLASSES,
+  type ShipClass,
+  type ShipId,
+} from './ships.ts';
 
 export type SimEvent =
   | { type: 'jump' }
@@ -34,12 +47,18 @@ export type SimEvent =
   | { type: 'shieldBreak'; obstacle: Obstacle }
   | { type: 'death'; obstacle: Obstacle }
   | { type: 'mult'; mult: number }
-  | { type: 'sector'; sector: number };
+  | { type: 'sector'; sector: number }
+  | { type: 'glide' }
+  /** The pulse cannon fired; `obstacle` is what it destroyed (null for a miss). */
+  | { type: 'pulse'; obstacle: Obstacle | null }
+  | { type: 'phase' }
+  | { type: 'phaseThrough'; obstacle: Obstacle }
+  | { type: 'abilityReady' };
 
 /** The simulation advances in fixed ticks so a recorded run replays identically at any frame rate. */
 export const SIM_STEP = 1 / 240;
 
-export type InputCode = 'L' | 'R' | 'J' | 'S';
+export type InputCode = 'L' | 'R' | 'J' | 'S' | 'A';
 /** One player input, stamped with the tick it was applied on. */
 export interface InputEntry {
   tick: number;
@@ -75,6 +94,19 @@ export class Sim {
   powers: Record<PowerKind, number> = { shield: 0, magnet: 0, overdrive: 0 };
   invuln = 0;
 
+  /** The hull this run is flown in, and the rules it brings. */
+  readonly ship: ShipId;
+  readonly cls: ShipClass;
+  /** 0..1; the ability can fire at 1. */
+  abilityCharge = 0;
+  /** Seconds of phase left (Phantom). */
+  phase = 0;
+  /** Seconds of glide left (Manta). */
+  glide = 0;
+  private glideUsed = false;
+  /** Song time the queued pulse fires at, or -1. */
+  private fireAt = -1;
+
   events: SimEvent[] = [];
 
   /** Ticks simulated so far; `t` is always exactly ticks * SIM_STEP. */
@@ -82,7 +114,7 @@ export class Sim {
   /** Every input this run, for ghosts and replays. */
   readonly log: InputEntry[] = [];
   /** Per-run counters for missions. */
-  stats = { jumps: 0, slides: 0, powers: 0, smashes: 0, closeMoves: 0, magnets: 0, overdrives: 0, shields: 0 };
+  stats = { jumps: 0, slides: 0, powers: 0, smashes: 0, closeMoves: 0, magnets: 0, overdrives: 0, shields: 0, abilities: 0 };
   /** Distance at the first power-up pickup (null until one is taken). */
   firstPowerAt: number | null = null;
 
@@ -100,11 +132,24 @@ export class Sim {
   readonly seed: number;
 
   /** With `replay`, the sim plays back those inputs and ignores live ones (a ghost). */
-  constructor(seed: number, replay: InputEntry[] | null = null) {
+  constructor(seed: number, replay: InputEntry[] | null = null, ship: ShipId = 'delta') {
     this.seed = seed;
     this.replay = replay;
-    this.track = new Track(seed);
+    this.ship = ship;
+    this.cls = SHIP_CLASSES[ship];
+    this.abilityCharge = this.cls.ability === 'pulse' ? 0.5 : this.cls.ability === 'phase' ? 1 : 0;
+    this.track = new Track(seed, this.cls.noPower);
     this.track.generateUntil(VIEW_DIST / SPEED_START + 2);
+  }
+
+  /** Full duration of a power-up for this ship. */
+  powerMax(k: PowerKind) {
+    return POWER_TIME[k] * this.cls.powerTime;
+  }
+
+  /** True while the pulse is queued for the next sixteenth note. */
+  get firing() {
+    return this.fireAt >= 0;
   }
 
   get mult() {
@@ -129,6 +174,10 @@ export class Sim {
     this.input('S');
   }
 
+  ability() {
+    this.input('A');
+  }
+
   get isGhost() {
     return this.replay !== null;
   }
@@ -137,11 +186,70 @@ export class Sim {
     if (!this.alive) return;
     if (!fromReplay) {
       if (this.replay) return;
+      // An ability press that can't do anything isn't worth a byte of the log.
+      if (a === 'A' && !this.canUseAbility()) return;
       this.log.push({ tick: this.ticks, a });
     }
     if (a === 'L' || a === 'R') this.doMove(a === 'L' ? -1 : 1);
-    else if (a === 'J') this.jumpBuffer = INPUT_BUFFER;
+    else if (a === 'J') this.doJump();
+    else if (a === 'A') this.doAbility();
     else this.doSlide();
+  }
+
+  private doJump() {
+    // Manta: a second press high in the air glides instead of buffering the next jump.
+    if (this.cls.glide && !this.grounded && !this.glideUsed && this.y > GLIDE_MIN_Y) {
+      this.glideUsed = true;
+      this.glide = GLIDE_TIME;
+      this.vy = Math.max(this.vy, 0.6);
+      this.events.push({ type: 'glide' });
+      return;
+    }
+    this.jumpBuffer = INPUT_BUFFER;
+  }
+
+  canUseAbility() {
+    return !!this.cls.ability && this.abilityCharge >= 1 && this.fireAt < 0 && this.phase <= 0;
+  }
+
+  private doAbility() {
+    if (!this.canUseAbility()) return;
+    this.abilityCharge = 0;
+    this.stats.abilities++;
+    if (this.cls.ability === 'pulse') {
+      // Quantised to the music: it goes off on the next sixteenth note.
+      this.fireAt = Math.ceil(this.t / PULSE_GRID - 1e-9) * PULSE_GRID;
+    } else {
+      this.phase = PHASE_TIME;
+      this.events.push({ type: 'phase' });
+    }
+  }
+
+  private firePulse() {
+    this.fireAt = -1;
+    const cx = laneX(this.lane);
+    const x0 = cx - this.cls.halfW;
+    const x1 = cx + this.cls.halfW;
+    let target: Obstacle | null = null;
+    for (const o of this.track.obstacles) {
+      if (o.done || o.time <= this.t || o.kind === 'laserLow' || o.kind === 'laserHigh') continue;
+      if ((o.time - this.t) * this.speed > PULSE_RANGE) break;
+      const [ox0, ox1] = this.obstacleX(o, o.time);
+      if (x1 > ox0 && x0 < ox1) {
+        target = o;
+        break;
+      }
+    }
+    if (target) {
+      target.done = 'smashed';
+      this.addScore(25 * this.mult);
+    }
+    this.events.push({ type: 'pulse', obstacle: target });
+  }
+
+  /** Every point goes through here, so the ship's score multiplier applies to all of it. */
+  private addScore(n: number) {
+    this.score += n * this.cls.score;
   }
 
   private doMove(dir: -1 | 1) {
@@ -153,6 +261,7 @@ export class Sim {
   }
 
   private doSlide() {
+    this.glide = 0;
     // In the air this becomes a fast-fall, and the slide starts on landing.
     this.slideBuffer = this.grounded ? INPUT_BUFFER : 0.6;
     if (!this.grounded) this.vy = Math.min(this.vy, FAST_FALL_VY);
@@ -184,6 +293,8 @@ export class Sim {
     this.track.generateUntil(t + VIEW_DIST / SPEED_START + 2);
     this.track.prune(t);
 
+    if (this.fireAt >= 0 && t >= this.fireAt - 1e-9) this.firePulse();
+    this.updateAbility(dt);
     this.updatePlayer(dt);
     this.updateObstacles();
     this.updatePickups();
@@ -197,12 +308,25 @@ export class Sim {
       this.events.push({ type: 'mult', mult: this.mult });
     }
 
-    this.score += this.speed * dt * 0.1 * this.mult * (this.powers.overdrive > 0 ? 2 : 1);
+    this.addScore(this.speed * dt * 0.1 * this.mult * (this.powers.overdrive > 0 ? 2 : 1));
 
     const sector = sectorAt(t);
     if (sector !== this.sector) {
       this.sector = sector;
       this.events.push({ type: 'sector', sector });
+      // Phase recharges at the start of every sector.
+      if (this.cls.ability === 'phase' && this.abilityCharge < 1 && this.phase <= 0) {
+        this.abilityCharge = 1;
+        this.events.push({ type: 'abilityReady' });
+      }
+    }
+  }
+
+  private updateAbility(dt: number) {
+    this.phase = Math.max(0, this.phase - dt);
+    if (this.cls.ability === 'pulse' && this.abilityCharge < 1 && this.fireAt < 0) {
+      this.abilityCharge = Math.min(1, this.abilityCharge + dt / PULSE_CHARGE);
+      if (this.abilityCharge >= 1) this.events.push({ type: 'abilityReady' });
     }
   }
 
@@ -215,6 +339,7 @@ export class Sim {
       this.slideTimer = 0;
       this.grounded = false;
       this.vy = JUMP_VY;
+      this.glideUsed = false;
       this.jumpAt = this.t;
       this.stats.jumps++;
       this.events.push({ type: 'jump' });
@@ -228,11 +353,17 @@ export class Sim {
     }
 
     if (!this.grounded) {
-      this.vy -= GRAVITY * dt;
+      if (this.glide > 0) {
+        this.glide = Math.max(0, this.glide - dt);
+        this.vy = Math.max(GLIDE_SINK, this.vy - GRAVITY * GLIDE_GRAVITY * dt);
+      } else {
+        this.vy -= GRAVITY * dt;
+      }
       this.y += this.vy * dt;
       if (this.y <= 0) {
         this.y = 0;
         this.vy = 0;
+        this.glide = 0;
         this.grounded = true;
         this.events.push({ type: 'land' });
       }
@@ -240,7 +371,7 @@ export class Sim {
     this.slideTimer = Math.max(0, this.slideTimer - dt);
 
     const target = laneX(this.lane);
-    const maxStep = (LANE_W / LANE_TIME) * dt;
+    const maxStep = (LANE_W / (LANE_TIME * this.cls.laneTime)) * dt;
     const dx = Math.max(-maxStep, Math.min(maxStep, target - this.x));
     this.x += dx;
     this.bank += ((dt > 0 ? dx / maxStep : 0) - this.bank) * Math.min(1, dt * 12);
@@ -262,8 +393,8 @@ export class Sim {
 
   private updateObstacles() {
     const [py0, py1] = this.playerY();
-    const px0 = this.x - PLAYER.halfW;
-    const px1 = this.x + PLAYER.halfW;
+    const px0 = this.x - this.cls.halfW;
+    const px1 = this.x + this.cls.halfW;
     for (const o of this.track.obstacles) {
       if (o.done) continue;
       const shape = OBSTACLE_SHAPE[o.kind];
@@ -301,7 +432,7 @@ export class Sim {
     this.nearMisses++;
     if (style !== 'side') this.stats.closeMoves++;
     this.bumpCombo();
-    const bonus = 50 * this.mult;
+    const bonus = Math.round(50 * this.mult * this.cls.score);
     this.score += bonus;
     this.events.push({ type: 'nearMiss', obstacle: o, style, bonus });
   }
@@ -310,8 +441,11 @@ export class Sim {
     if (this.powers.overdrive > 0) {
       o.done = 'smashed';
       this.stats.smashes++;
-      this.score += 25 * this.mult;
+      this.addScore(25 * this.mult);
       this.events.push({ type: 'smash', obstacle: o });
+    } else if (this.phase > 0) {
+      o.done = 'passed';
+      this.events.push({ type: 'phaseThrough', obstacle: o });
     } else if (this.invuln > 0) {
       o.done = 'passed';
     } else if (this.powers.shield > 0) {
@@ -347,14 +481,14 @@ export class Sim {
       if (p.kind === 'orb') {
         this.orbs++;
         this.bumpCombo();
-        this.score += 10 * this.mult;
+        this.addScore(10 * this.mult);
         this.events.push({ type: 'orb', pickup: p, combo: this.combo });
       } else {
-        this.powers[p.kind] = POWER_TIME[p.kind];
+        this.powers[p.kind] = this.powerMax(p.kind);
         this.stats.powers++;
         this.stats[p.kind === 'shield' ? 'shields' : p.kind === 'magnet' ? 'magnets' : 'overdrives']++;
         this.firstPowerAt ??= this.distance;
-        this.score += 100;
+        this.addScore(100);
         this.events.push({ type: 'power', pickup: p });
       }
     }

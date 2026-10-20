@@ -66,9 +66,12 @@ export class Track {
   private rowCount = 0;
   private nextPower: number;
   private first = true;
+  private noPower: PowerKind | null;
 
-  constructor(seed: number) {
+  /** `noPower` leaves one power-up kind out (the ship can't use it); the rest of the track is unchanged. */
+  constructor(seed: number, noPower: PowerKind | null = null) {
     this.rng = mulberry32(seed);
+    this.noPower = noPower;
     this.nextPower = 14 + Math.floor(this.rng() * 8);
   }
 
@@ -161,7 +164,10 @@ export class Track {
 
     // Power-ups sit on the safe route, one beat after the previous row.
     if (this.rowCount >= this.nextPower && gap >= 2) {
-      const kind = weighted<PowerKind>(rng, ['shield', 'magnet', 'overdrive'], [0.45, 0.35, 0.2]);
+      // Filtering keeps it to one draw from the RNG, so every later row matches the other ships' tracks.
+      const kinds = (['shield', 'magnet', 'overdrive'] as PowerKind[]).filter((k) => k !== this.noPower);
+      const weights = kinds.map((k) => ({ shield: 0.45, magnet: 0.35, overdrive: 0.2 })[k]);
+      const kind = weighted(rng, kinds, weights);
       this.pickups.push({ id: this.id(), kind, lane, time: prevT + BEAT, y: 1 });
       this.nextPower = this.rowCount + 20 + Math.floor(rng() * 14);
     }

@@ -238,13 +238,25 @@ export class Ship {
     return hex === null ? this.col.copy(p.c.secondary) : this.col.setHex(hex);
   }
 
+  /** Garage showcase: 0 most of the time, then 0..1 over the trait's demo, once every few seconds. */
+  demo(time: number) {
+    const len = { delta: 0, arrow: 0.7, manta: 1.6, twin: 0.3, phantom: 1.2 }[this.loadout.ship];
+    const c = time % 4;
+    return len && c < len ? c / len : 0;
+  }
+
   /** `garage` parks the ship centre-stage and spins it for the preview. */
   update(sim: Sim, p: LivePalette, dt: number, time: number, flow: number, alive: boolean, pulse = 0, garage = false) {
     const od = sim.powers.overdrive > 0 && !garage;
+    // In the garage each ship shows off its trait every few seconds (the Interceptor's shot is drawn by the view).
+    const demo = garage ? this.demo(time) : 0;
     if (garage) {
-      this.group.position.set(0, 0.7 + Math.sin(time * 1.5) * 0.08, 0);
+      const id = this.loadout.ship;
+      const lift = id === 'manta' ? Math.sin(demo * Math.PI) * 0.45 : 0;
+      this.group.position.set(0, 0.7 + Math.sin(time * 1.5) * 0.08 + lift, 0);
       // Gentle sway rather than a full spin, so the trails keep streaming backwards.
-      this.body.rotation.set(0.08, Math.sin(time * 0.5) * 0.5, Math.sin(time * 0.8) * 0.12);
+      const roll = id === 'arrow' ? (1 - Math.cos(demo * Math.PI)) * Math.PI : 0;
+      this.body.rotation.set(0.08 - lift * 0.3, Math.sin(time * 0.5) * 0.5, Math.sin(time * 0.8) * 0.12 + roll);
       this.body.scale.setScalar(1);
     } else {
       const hover = Math.sin(time * 3.2) * 0.06;
@@ -259,6 +271,8 @@ export class Ship {
 
     const main = this.mainColor(p, od);
     this.edgeMat.color.copy(main).multiplyScalar(this.ghost ? 1.2 : 2.2);
+    const phased = !this.ghost && (garage ? this.loadout.ship === 'phantom' && demo > 0 : sim.phase > 0);
+    if (phased) this.edgeMat.color.lerp(this.col.setRGB(1, 1, 1), 0.6).multiplyScalar(1.4);
     const accent = this.ghost ? main : od ? p.c.warm : colorHex(this.loadout.color) !== null ? main : p.c.primary;
     this.engineMat.color.copy(accent).multiplyScalar(3);
     this.flameMat.color.copy(accent).multiplyScalar(1.6);
@@ -285,8 +299,10 @@ export class Ship {
     this.aura.visible = od && !this.ghost;
     this.auraMat.color.copy(p.c.warm).multiplyScalar(0.35 + Math.sin(time * 20) * 0.08);
 
-    // Blink while invulnerable after a shield break.
-    if (!this.ghost) this.body.visible = garage || !(sim.invuln > 0 && Math.sin(time * 40) < 0);
+    // Blink while invulnerable after a shield break; flicker out of phase while phasing.
+    if (!this.ghost) this.body.visible = phased ? Math.sin(time * 55) > -0.4 : garage || !(sim.invuln > 0 && Math.sin(time * 40) < 0);
+    this.hullMat.opacity = this.ghost ? this.hullMat.opacity : phased ? 0.35 : 1;
+    this.hullMat.transparent = this.ghost || phased;
 
     this.group.updateMatrixWorld(true);
     const style = this.loadout.trail;

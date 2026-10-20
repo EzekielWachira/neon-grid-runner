@@ -389,6 +389,28 @@ export class AudioEngine {
   click() {
     this.sfxTone('triangle', 900, 700, 0.05, 0.06);
   }
+  /** Interceptor's cannon: a laser zap, with a crunch when it hits something. */
+  pulse(hit: boolean) {
+    this.sfxTone('sawtooth', 2400, 180, 0.22, 0.12);
+    this.sfxTone('square', 1200, 90, 0.16, 0.06);
+    if (hit) this.sfxNoise(0.3, 0.32, 5000, 300, 'lowpass', 0.05);
+  }
+  /** Phantom's phase: a swelling, detuned shimmer. */
+  phase() {
+    [0, 7, 12].forEach((s, i) => this.sfxTone('sine', mtof(76 + s), mtof(64 + s), 0.6, 0.06, i * 0.02));
+    this.sfxNoise(0.7, 0.12, 9000, 1200, 'highpass');
+  }
+  phaseThrough() {
+    this.sfxTone('sine', 2600, 1300, 0.18, 0.06);
+  }
+  glide() {
+    this.sfxNoise(0.5, 0.12, 900, 2600, 'bandpass');
+    this.sfxTone('triangle', 520, 660, 0.3, 0.06);
+  }
+  abilityReady() {
+    this.sfxTone('triangle', mtof(84), mtof(84), 0.08, 0.07);
+    this.sfxTone('triangle', mtof(91), mtof(91), 0.14, 0.07, 0.07);
+  }
 }
 
 export const audio = new AudioEngine();
