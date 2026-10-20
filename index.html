@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#05010f" />
+    <meta name="description" content="A synthwave 3D endless runner that moves to the beat. Dodge, jump and slide down a neon grid." />
+    <title>Neon Grid Runner</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800;900&family=Chakra+Petch:wght@400;500;600&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+
+    <section id="title" class="screen">
+      <div class="title-wrap">
+        <h1 class="logo">
+          <span class="l1">Neon</span>
+          <span class="l2">Grid Runner</span>
+        </h1>
+        <p class="tag">Ride the beat. Don’t touch the light.</p>
+        <div class="menu">
+          <button id="play" class="btn primary">Run</button>
+          <button id="daily" class="btn">Daily run <small id="daily-best"></small></button>
+          <button id="settings-btn" class="btn ghost">Settings</button>
+        </div>
+        <p class="best">Best <b id="best">0</b></p>
+      </div>
+      <div class="help">
+        <span class="keys-help"><kbd>←</kbd><kbd>→</kbd> steer · <kbd>↑</kbd>/<kbd>Space</kbd> jump · <kbd>↓</kbd> slide · <kbd>Esc</kbd> pause · gamepad works too</span>
+        <span class="touch-help">Swipe ← → to steer · swipe ↑ or tap to jump · swipe ↓ to slide</span>
+      </div>
+    </section>
+
+    <section id="hud" class="screen">
+      <div class="hud-top">
+        <div class="score-box">
+          <div id="score">0</div>
+          <div id="mult" class="mult">x1</div>
+        </div>
+        <div class="center-info">
+          <div id="dist">0 m</div>
+          <div id="sector-label">Sector 1</div>
+          <div class="daily-tag">Daily run</div>
+        </div>
+        <div class="hud-btns">
+          <button id="mute-btn" class="icon" aria-label="Mute">
+            <svg class="on" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z" /><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" /></svg>
+            <svg class="off" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z" /><path d="M17 9l5 6M22 9l-5 6" /></svg>
+          </button>
+          <button id="pause-btn" class="icon" aria-label="Pause">
+            <svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14" /></svg>
+          </button>
+        </div>
+      </div>
+      <div id="powers" class="powers"></div>
+      <div id="combo" class="combo"></div>
+      <div id="popups"></div>
+      <div id="countdown" class="countdown"></div>
+      <div id="banner" class="banner"></div>
+    </section>
+
+    <section id="pause" class="screen modal">
+      <div class="panel">
+        <h2>Paused</h2>
+        <div class="menu">
+          <button id="resume" class="btn primary">Resume</button>
+          <button id="restart" class="btn">Restart</button>
+          <button id="quit" class="btn ghost">Quit to menu</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="over" class="screen modal">
+      <div class="panel over-panel">
+        <p class="eyebrow" id="over-mode">Endless run</p>
+        <h2 class="glitch" data-text="Signal lost">Signal lost</h2>
+        <div id="over-badge" class="badge"></div>
+        <div id="over-score" class="big-score">0</div>
+        <div class="stats">
+          <div><span>Distance</span><b id="stat-dist"></b></div>
+          <div><span>Time</span><b id="stat-time"></b></div>
+          <div><span>Orbs</span><b id="stat-orbs"></b></div>
+          <div><span>Near misses</span><b id="stat-near"></b></div>
+          <div><span>Best combo</span><b id="stat-combo"></b></div>
+          <div><span>Sector</span><b id="stat-sector"></b></div>
+        </div>
+        <div class="menu row">
+          <button id="retry" class="btn primary">Run again</button>
+          <button id="share" class="btn">Share score</button>
+          <button id="menu" class="btn ghost">Menu</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="settings" class="screen modal">
+      <div class="panel settings-panel">
+        <h2>Settings</h2>
+        <label class="row-set"><span>Graphics</span>
+          <select id="set-quality">
+            <option value="auto">Auto (adapts to your device)</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low (no bloom)</option>
+          </select>
+        </label>
+        <label class="row-set"><span>Music</span><input id="set-music" type="range" min="0" max="1" step="0.05" /></label>
+        <label class="row-set"><span>Sound effects</span><input id="set-sfx" type="range" min="0" max="1" step="0.05" /></label>
+        <label class="row-set"><span>Screen shake</span><input id="set-shake" type="checkbox" class="switch" /></label>
+        <label class="row-set"><span>Show FPS</span><input id="set-fps" type="checkbox" class="switch" /></label>
+        <button id="settings-close" class="btn primary">Done</button>
+      </div>
+    </section>
+
+    <div id="resume-count" class="resume-count"></div>
+    <div id="fps" class="fps" hidden></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
