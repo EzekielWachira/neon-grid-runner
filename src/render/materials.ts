@@ -1,5 +1,6 @@
 // Custom shaders. All of them do their own distance fog so they blend into the horizon glow.
 import * as THREE from 'three';
+import { BEND_GLSL, bendUniform } from './curve.ts';
 
 export const fogUniforms = {
   uFog: { value: new THREE.Color() },
@@ -7,10 +8,12 @@ export const fogUniforms = {
   uFogFar: { value: 200 },
 };
 
-const FOG_VERT = /* glsl */ `
+const FOG_VARYINGS = /* glsl */ `
   varying vec3 vWorld;
   varying float vDepth;
 `;
+/** Vertex-side prelude: varyings plus the curved-world helper. */
+const FOG_VERT = FOG_VARYINGS + BEND_GLSL;
 
 export function floorMaterial() {
   return new THREE.ShaderMaterial({
@@ -23,19 +26,21 @@ export function floorMaterial() {
       uTrack: { value: new THREE.Color() },
       uTrackHalf: { value: 6 },
       uLaneW: { value: 2.4 },
+      uBend: bendUniform,
     },
     vertexShader: /* glsl */ `
       ${FOG_VERT}
       void main() {
         vec4 w = modelMatrix * vec4(position, 1.0);
         vWorld = w.xyz;
+        w.xyz += bendOffset(w.xyz);
         vec4 mv = viewMatrix * w;
         vDepth = -mv.z;
         gl_Position = projectionMatrix * mv;
       }
     `,
     fragmentShader: /* glsl */ `
-      ${FOG_VERT}
+      ${FOG_VARYINGS}
       uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
       uniform float uOffset; uniform float uPulse; uniform float uWave;
       uniform vec3 uGrid; uniform vec3 uTrack; uniform float uTrackHalf; uniform float uLaneW;
@@ -137,7 +142,7 @@ export function sunMaterial() {
 /** Hologram material for obstacles: dark translucent body, glowing frame, moving scanlines, fresnel rim. */
 export function holoMaterial(color: THREE.Color) {
   return new THREE.ShaderMaterial({
-    uniforms: { ...fogUniforms, uColor: { value: color }, uTime: { value: 0 }, uPulse: { value: 0 } },
+    uniforms: { ...fogUniforms, uColor: { value: color }, uTime: { value: 0 }, uPulse: { value: 0 }, uBend: bendUniform },
     transparent: true,
     vertexShader: /* glsl */ `
       ${FOG_VERT}
@@ -148,13 +153,14 @@ export function holoMaterial(color: THREE.Color) {
         vec4 w = modelMatrix * vec4(position, 1.0);
         vWorld = w.xyz;
         vNormalW = normalize(mat3(modelMatrix) * normal);
+        w.xyz += bendOffset(w.xyz);
         vec4 mv = viewMatrix * w;
         vDepth = -mv.z;
         gl_Position = projectionMatrix * mv;
       }
     `,
     fragmentShader: /* glsl */ `
-      ${FOG_VERT}
+      ${FOG_VARYINGS}
       varying vec2 vUv;
       varying vec3 vNormalW;
       uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
@@ -177,19 +183,20 @@ export function holoMaterial(color: THREE.Color) {
 /** Moving light dashes along the track-edge rails. */
 export function railMaterial() {
   return new THREE.ShaderMaterial({
-    uniforms: { ...fogUniforms, uColor: { value: new THREE.Color() }, uOffset: { value: 0 } },
+    uniforms: { ...fogUniforms, uColor: { value: new THREE.Color() }, uOffset: { value: 0 }, uBend: bendUniform },
     vertexShader: /* glsl */ `
       ${FOG_VERT}
       void main() {
         vec4 w = modelMatrix * vec4(position, 1.0);
         vWorld = w.xyz;
+        w.xyz += bendOffset(w.xyz);
         vec4 mv = viewMatrix * w;
         vDepth = -mv.z;
         gl_Position = projectionMatrix * mv;
       }
     `,
     fragmentShader: /* glsl */ `
-      ${FOG_VERT}
+      ${FOG_VARYINGS}
       uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
       uniform vec3 uColor; uniform float uOffset;
       void main() {
@@ -207,11 +214,12 @@ export function railMaterial() {
 /** Additive camera-facing points with per-particle colour, size and alpha. */
 export function particleMaterial() {
   return new THREE.ShaderMaterial({
-    uniforms: { uScale: { value: 1 } },
+    uniforms: { uScale: { value: 1 }, uBend: bendUniform },
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */ `
+      ${BEND_GLSL}
       attribute float aSize;
       attribute float aAlpha;
       attribute vec3 aColor;
@@ -219,7 +227,9 @@ export function particleMaterial() {
       varying float vAlpha;
       uniform float uScale;
       void main() {
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        w.xyz += bendOffset(w.xyz);
+        vec4 mv = viewMatrix * w;
         // Capped so sparks right in front of the camera don't balloon into screen-filling blobs.
         gl_PointSize = min(aSize * uScale * (300.0 / max(0.1, -mv.z)), 48.0 * uScale);
         gl_Position = projectionMatrix * mv;
@@ -242,12 +252,13 @@ export function particleMaterial() {
 /** Ribbon trail: per-vertex alpha and tint, additive. */
 export function trailMaterial(color: THREE.Color) {
   return new THREE.ShaderMaterial({
-    uniforms: { uColor: { value: color } },
+    uniforms: { uColor: { value: color }, uBend: bendUniform },
     transparent: true,
     depthWrite: false,
     side: THREE.DoubleSide,
     blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */ `
+      ${BEND_GLSL}
       attribute float aAlpha;
       attribute vec3 aColor;
       varying float vAlpha;
@@ -255,7 +266,9 @@ export function trailMaterial(color: THREE.Color) {
       void main() {
         vAlpha = aAlpha;
         vTint = aColor;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        w.xyz += bendOffset(w.xyz);
+        gl_Position = projectionMatrix * viewMatrix * w;
       }
     `,
     fragmentShader: /* glsl */ `

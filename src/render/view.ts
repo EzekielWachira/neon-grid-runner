@@ -14,9 +14,14 @@ import { Ship } from './ship.ts';
 import { Things } from './things.ts';
 import { Fx } from './fx.ts';
 import type { Loadout, ShipId } from '../meta/garage.ts';
+import { bendUniform, curveAt } from './curve.ts';
 
 export type Quality = 'auto' | 'high' | 'medium' | 'low';
 export type ViewMode = 'title' | 'run' | 'dying' | 'paused' | 'garage';
+/** Camera modes for replays ('chase' is the normal gameplay camera). */
+export type CamMode = 'chase' | 'cinematic' | 'side' | 'low' | 'top' | 'orbit';
+const CINEMATIC_SHOTS: CamMode[] = ['side', 'low', 'top', 'orbit', 'chase'];
+const SHOT_LENGTH = 4.5;
 
 const QUALITY = {
   high: { ratio: 2, bloom: 1 },
@@ -58,6 +63,11 @@ export class View {
   private offset = 0;
   private tmp = new THREE.Vector3();
   shakeEnabled = true;
+  /** Curved, rolling road (purely visual). */
+  curves = true;
+  cameraMode: CamMode = 'chase';
+  private shot: CamMode = 'chase';
+  private bendTarget = new THREE.Vector2();
   /** Screen point (px) where the garage preview should centre the ship, clear of the UI panel. */
   garageFocus: { x: number; y: number } | null = null;
 
@@ -252,6 +262,10 @@ export class View {
     const c = p.c;
 
     const garage = mode === 'garage';
+    // The road's bend follows distance travelled, so a replay curves exactly like the original run.
+    if (garage || !this.curves) this.bendTarget.set(0, 0);
+    else this.bendTarget.copy(curveAt(sim.distance, 1));
+    bendUniform.value.lerp(this.bendTarget, 1 - Math.exp(-dt * 4));
     const moving = mode === 'run' || mode === 'title' || garage;
     const flow = moving ? sim.speed * dt * (garage ? 0.3 : 1) : 0;
     this.offset += flow;
@@ -293,7 +307,8 @@ export class View {
     if (od && mode === 'run') {
       this.fx.spawn(sim.x + (Math.random() - 0.5) * 1.6, 0.4 + sim.y + Math.random() * 0.6, 0.6, 0, 0, 6, 0.5, 0.5, c.warm);
     }
-    this.fx.update(mode === 'dying' ? dt * 0.6 : dt, flow);
+    // Paused (incl. photo mode) freezes effects in place while the camera can still move.
+    this.fx.update(mode === 'paused' ? 0 : mode === 'dying' ? dt * 0.6 : dt, flow);
 
     // Camera.
     let pos: THREE.Vector3;
@@ -311,9 +326,45 @@ export class View {
       look = new THREE.Vector3(sim.x * 0.5, 1.4, -20);
       fov = 62;
     } else {
-      pos = this.tmp.set(sim.x * 0.55, 3.1 + sim.y * 0.35, 7.4 - speedK * 0.9);
-      look = new THREE.Vector3(sim.x * 0.72, 1.15 + sim.y * 0.22, -14);
-      fov = 66 + speedK * 12 + (od ? 8 : 0);
+      // Cinematic mode cuts between shots on a timer; a cut snaps the camera instead of easing.
+      let shot = this.cameraMode;
+      if (shot === 'cinematic') shot = CINEMATIC_SHOTS[Math.floor(time / SHOT_LENGTH) % CINEMATIC_SHOTS.length];
+      const cut = shot !== this.shot;
+      this.shot = shot;
+      const sx = sim.x;
+      const sy = sim.y;
+      switch (shot) {
+        case 'side':
+          pos = this.tmp.set(sx + 6.5, 1.6 + sy * 0.5, 2.5);
+          look = new THREE.Vector3(sx, 0.9 + sy * 0.5, -6);
+          fov = 55;
+          break;
+        case 'low':
+          // Ahead of the ship, low on the grid, looking back at it.
+          pos = this.tmp.set(sx - 1.8, 0.45, -7.5);
+          look = new THREE.Vector3(sx, 0.9 + sy * 0.4, 1.5);
+          fov = 60;
+          break;
+        case 'top':
+          pos = this.tmp.set(sx * 0.4, 15, 9);
+          look = new THREE.Vector3(sx * 0.4, 0, -10);
+          fov = 58;
+          break;
+        case 'orbit':
+          pos = this.tmp.set(sx + Math.sin(time * 0.6) * 5, 2.2 + sy * 0.4, Math.cos(time * 0.6) * 5);
+          look = new THREE.Vector3(sx, 0.8 + sy * 0.6, 0);
+          fov = 56;
+          break;
+        default:
+          pos = this.tmp.set(sx * 0.55, 3.1 + sy * 0.35, 7.4 - speedK * 0.9);
+          look = new THREE.Vector3(sx * 0.72, 1.15 + sy * 0.22, -14);
+          fov = 66 + speedK * 12 + (od ? 8 : 0);
+      }
+      if (cut) {
+        this.camPos.copy(pos);
+        this.camLook.copy(look);
+        this.camera.fov = fov;
+      }
     }
     const k = 1 - Math.exp(-dt * (mode === 'dying' ? 2 : 9));
     this.camPos.lerp(pos, k);
@@ -336,7 +387,8 @@ export class View {
     const sh = this.shake * 0.35;
     this.camera.position.set(this.camPos.x + (Math.random() - 0.5) * sh, this.camPos.y + (Math.random() - 0.5) * sh, this.camPos.z);
     this.camera.lookAt(this.camLook);
-    this.camera.rotateZ(mode === 'title' || garage ? 0 : -sim.bank * 0.07);
+    // Lean slightly into the curve ahead.
+    this.camera.rotateZ((mode === 'title' || garage ? 0 : -sim.bank * 0.07) - bendUniform.value.x * 40);
 
     // Post.
     this.flash *= Math.exp(-dt * 4.5);
@@ -349,6 +401,12 @@ export class View {
     this.bloom.strength = 0.85 + pulse * 0.2 + (od ? 0.25 : 0);
 
     this.composer.render(dt);
+  }
+
+  /** Renders the current frame and returns it as a PNG data URL (photo mode). */
+  capture(): string {
+    this.composer.render(0);
+    return this.renderer.domElement.toDataURL('image/png');
   }
 
   /** For UI that wants the ship's screen position (e.g. score popups). */

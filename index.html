@@ -32,6 +32,7 @@
             <span id="challenge-score"></span>
           </div>
           <button id="challenge-go" class="btn primary small">Race</button>
+          <button id="challenge-watch" class="btn small">Watch</button>
           <button id="challenge-x" class="icon" aria-label="Dismiss challenge"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
         </div>
         <div class="menu">
@@ -41,6 +42,7 @@
         </div>
         <div class="sub-menu">
           <button id="missions-btn" class="btn ghost">Missions</button>
+          <button id="replays-btn" class="btn ghost">Replays</button>
           <button id="garage-btn" class="btn ghost">Garage</button>
           <button id="settings-btn" class="btn ghost">Settings</button>
         </div>
@@ -114,6 +116,7 @@
         <div id="over-rewards" class="rewards"></div>
         <div class="menu row">
           <button id="retry" class="btn primary">Run again</button>
+          <button id="watch" class="btn">Watch replay</button>
           <button id="share" class="btn">Share ghost</button>
           <button id="menu" class="btn ghost">Menu</button>
         </div>
@@ -135,6 +138,7 @@
         <label class="row-set"><span>Sound effects</span><input id="set-sfx" type="range" min="0" max="1" step="0.05" /></label>
         <label class="row-set"><span>Screen shake</span><input id="set-shake" type="checkbox" class="switch" /></label>
         <label class="row-set"><span>Show FPS</span><input id="set-fps" type="checkbox" class="switch" /></label>
+        <label class="row-set"><span>Curved road <small>sweeping turns and hills (visual only)</small></span><input id="set-curves" type="checkbox" class="switch" /></label>
         <label class="row-set"><span>Race my daily ghost</span><input id="set-ghosts" type="checkbox" class="switch" /></label>
         <label class="row-set"><span>Callsign <small>shown on your ghost links</small></span><input id="set-callsign" type="text" maxlength="16" spellcheck="false" autocomplete="off" /></label>
         <button id="settings-close" class="btn primary">Done</button>
@@ -166,6 +170,45 @@
         <div id="gar-items" class="gar-items"></div>
         <button id="garage-close" class="btn primary">Done</button>
       </div>
+    </section>
+
+    <section id="replays" class="screen modal">
+      <div class="panel missions-panel">
+        <h2>Replays</h2>
+        <div id="rp-list" class="ms-list"></div>
+        <button id="replays-close" class="btn primary">Done</button>
+      </div>
+    </section>
+
+    <section id="replay" class="screen replay">
+      <div class="rp-top">
+        <span class="rp-tag">Replay</span>
+        <b id="rp-name"></b>
+        <span id="rp-score" class="rp-score"></span>
+        <button id="rp-exit" class="icon" aria-label="Exit replay"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
+      </div>
+      <div class="rp-bar">
+        <button id="rp-play" class="icon" aria-label="Pause">
+          <svg class="i-play" viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z" /></svg>
+          <svg class="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14" /></svg>
+        </button>
+        <input id="rp-seek" type="range" min="0" max="1000" value="0" aria-label="Seek" />
+        <span id="rp-time" class="rp-time">0:00 / 0:00</span>
+        <div class="rp-speeds">
+          <button class="btn ghost small" data-speed="0.25">¼×</button>
+          <button class="btn ghost small" data-speed="0.5">½×</button>
+          <button class="btn ghost small" data-speed="1">1×</button>
+          <button class="btn ghost small" data-speed="2">2×</button>
+        </div>
+        <button id="rp-cam" class="btn ghost small">Camera</button>
+        <button id="rp-photo" class="btn ghost small">Photo</button>
+      </div>
+      <div class="rp-photo-bar">
+        <button id="rp-photo-cam" class="btn ghost small">Camera</button>
+        <button id="rp-save" class="btn primary small">Save image</button>
+        <button id="rp-photo-exit" class="btn ghost small">Back</button>
+      </div>
+      <p class="rp-keys">Space play/pause · ←/→ seek 5s · C camera · H photo · Esc exit</p>
     </section>
 
     <div id="resume-count" class="resume-count"></div>

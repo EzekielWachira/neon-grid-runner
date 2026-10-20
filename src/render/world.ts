@@ -4,6 +4,7 @@ import { TRACK_HALF, LANE_W, VIEW_DIST } from '../core/config.ts';
 import { mulberry32 } from '../core/rng.ts';
 import { fogUniforms, floorMaterial, railMaterial, skyMaterial, sunMaterial } from './materials.ts';
 import type { LivePalette } from './palette.ts';
+import { bend } from './curve.ts';
 
 const ARCH_SPACING = 36;
 const ARCH_COUNT = 8;
@@ -76,7 +77,8 @@ export class World {
     this.floor = floorMaterial();
     this.floor.uniforms.uTrackHalf.value = TRACK_HALF;
     this.floor.uniforms.uLaneW.value = LANE_W;
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(640, 520), this.floor);
+    // Tessellated along its length so the curved-world bend has vertices to move.
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(640, 520, 48, 160), this.floor);
     floor.rotation.x = -Math.PI / 2;
     floor.position.z = -240;
     g.add(floor);
@@ -84,7 +86,7 @@ export class World {
     // Edge rails with running light dashes.
     this.rails = railMaterial();
     for (const s of [-1, 1]) {
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 440), this.rails);
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 440, 1, 1, 220), this.rails);
       rail.position.set(s * (TRACK_HALF + 0.12), 0.07, -210);
       g.add(rail);
     }
@@ -94,7 +96,7 @@ export class World {
     const beam = new THREE.BoxGeometry(TRACK_HALF * 2 + 1.6, 0.22, 0.22);
     for (let i = 0; i < ARCH_COUNT; i++) {
       const a = new THREE.Group();
-      const mat = new THREE.MeshBasicMaterial({ toneMapped: false });
+      const mat = bend(new THREE.MeshBasicMaterial({ toneMapped: false }));
       this.archMats.push(mat);
       for (const s of [-1, 1]) {
         const p = new THREE.Mesh(post, mat);
@@ -111,9 +113,11 @@ export class World {
     // City of dark towers either side, with glowing edges.
     const box = new THREE.BoxGeometry(1, 1, 1);
     box.translate(0, 0.5, 0);
-    this.towerBody = new THREE.InstancedMesh(box, new THREE.MeshBasicMaterial({ color: 0x030108 }), TOWER_COUNT);
-    this.towerEdge = new THREE.InstancedMesh(box, new THREE.MeshBasicMaterial({ toneMapped: false }), TOWER_COUNT);
-    this.towerTop = new THREE.InstancedMesh(box, new THREE.MeshBasicMaterial({ toneMapped: false }), TOWER_COUNT);
+    this.towerBody = new THREE.InstancedMesh(box, bend(new THREE.MeshBasicMaterial({ color: 0x030108 })), TOWER_COUNT);
+    this.towerEdge = new THREE.InstancedMesh(box, bend(new THREE.MeshBasicMaterial({ toneMapped: false })), TOWER_COUNT);
+    this.towerTop = new THREE.InstancedMesh(box, bend(new THREE.MeshBasicMaterial({ toneMapped: false })), TOWER_COUNT);
+    // Instances move every frame and the bend displaces them, so skip frustum culling.
+    for (const m of [this.towerBody, this.towerEdge, this.towerTop]) m.frustumCulled = false;
     const trng = mulberry32(1234);
     for (let i = 0; i < TOWER_COUNT; i++) {
       const side = i % 2 ? 1 : -1;
@@ -132,7 +136,7 @@ export class World {
     for (let i = 0; i < SPEEDLINES; i++) this.resetSpeedLine(i, true);
     const lg = new THREE.BufferGeometry();
     lg.setAttribute('position', new THREE.BufferAttribute(this.speedPos, 3));
-    this.speedMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+    this.speedMat = bend(new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
     this.speedLines = new THREE.LineSegments(lg, this.speedMat);
     this.speedLines.frustumCulled = false;
     g.add(this.speedLines);
@@ -182,8 +186,10 @@ export class World {
     const fillGeo = geo.clone();
     fillGeo.setIndex(fillIdx);
     geo.setIndex(lineIdx);
-    const fill = new THREE.Mesh(fillGeo, new THREE.MeshBasicMaterial({ color: 0x020006, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, fog: false }));
-    const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ transparent: true, opacity: 0.7, fog: false, toneMapped: false }));
+    const fill = new THREE.Mesh(fillGeo, bend(new THREE.MeshBasicMaterial({ color: 0x020006, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, fog: false })));
+    const lines = new THREE.LineSegments(geo, bend(new THREE.LineBasicMaterial({ transparent: true, opacity: 0.7, fog: false, toneMapped: false })));
+    fill.frustumCulled = false;
+    lines.frustumCulled = false;
     return { fill, lines };
   }
 

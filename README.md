@@ -15,6 +15,8 @@ A synthwave 3D endless runner that moves to the beat. Steer across five lanes, j
 - **Ghost racing:** the simulation runs in fixed 1/240 s ticks and records every input, so a run replays exactly from its seed and input log (about 1 KB for five minutes). Race your best run in *Ghost race*, see your earlier best on today's daily run, or share a ghost link so friends race your exact run. A live HUD readout shows how far ahead or behind you are.
 - **Missions:** three active challenges at a time (single-run and cumulative). Completing them earns credits and raises your rank; each is replaced by a harder one.
 - **Garage:** spend credits on ships (Delta, Arrow, Manta, Interceptor, Phantom), trail styles (Twin, Comet, Pulse, Spectrum, Stardust) and colours, previewed live in 3D. Purely cosmetic: the hitbox never changes.
+- **Curving road:** every shader bends the world by distance ahead (a "curved world" vertex bend), so the track sweeps left and right and rolls over hills while the simulation stays perfectly straight. It follows distance travelled, so replays curve exactly like the original run, and it can be turned off in Settings.
+- **Replay theatre:** watch your last run, best run, today's daily best or a shared ghost link. Play/pause, scrub (seeking backwards re-simulates from the start in milliseconds), ¼× to 2× speed, camera modes (cinematic auto-cuts, chase, side, low, top, orbit) and a photo mode that saves a full-resolution PNG. Music re-syncs at 1× speed.
 - **Visuals:** custom grid, sky, sun and hologram shaders; bloom; chromatic aberration, scanlines and grain; light trails; particles; ship-shatter explosions; speed lines; adaptive resolution
 - **Controls:** keyboard, touch swipes and gamepads
 
@@ -42,13 +44,15 @@ npm run dev
 | Slide (fast-fall in the air) | `↓` / `S` | Swipe down | B |
 | Pause | `Esc` / `P` | Pause button | Start |
 
+In the replay theatre: `Space` play/pause, `←`/`→` seek 5 s, `C` camera, `H` photo mode, `Esc` exit.
+
 ## Code map
 
 | Path | Role |
 | --- | --- |
 | `src/core/` | Pure game logic with no rendering: config, seeded RNG, track generator, fixed-tick simulation, autopilot, input-log encoding |
 | `src/audio/engine.ts` | Synth soundtrack, sidechain, sound effects and the master clock |
-| `src/render/` | Three.js scene: shaders, environment, ship, obstacles, particles, camera and post-processing |
+| `src/render/` | Three.js scene: shaders, curved-world bend, environment, ship, obstacles, particles, cameras and post-processing |
 | `src/meta/` | Missions, garage catalogue and ghost-link encoding |
 | `src/main.ts` | Game states, HUD, menus, ghosts, saving |
 | `scripts/verify-runs.ts` | Headless survivability check (runs in CI before every deploy) |

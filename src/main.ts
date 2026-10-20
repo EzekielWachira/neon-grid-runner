@@ -5,7 +5,7 @@ import { Bot } from './core/bot.ts';
 import { hashString } from './core/rng.ts';
 import { decodeLog, encodeLog } from './core/ghost.ts';
 import { audio } from './audio/engine.ts';
-import { View, type Quality } from './render/view.ts';
+import { View, type CamMode, type Quality } from './render/view.ts';
 import { PALETTES } from './render/palette.ts';
 import { Input, type Action } from './input.ts';
 import { MissionRun, freshMissions, isTotal, missionText, rankName, rankOf, type MissionSave, type RunReport } from './meta/missions.ts';
@@ -23,6 +23,7 @@ interface Settings {
   muted: boolean;
   ghosts: boolean;
   callsign: string;
+  curves: boolean;
 }
 interface GhostSave {
   seed: number;
@@ -42,6 +43,7 @@ interface Save {
   garage: GarageSave;
   bestGhost?: GhostSave;
   dailyGhost?: GhostSave;
+  lastRun?: GhostSave;
 }
 const KEY = 'neon-grid-runner:v1';
 function load(): Save {
@@ -50,7 +52,7 @@ function load(): Save {
     bestDistance: 0,
     runs: 0,
     daily: {},
-    settings: { quality: 'auto', music: 0.8, sfx: 0.9, shake: true, fps: false, muted: false, ghosts: true, callsign: 'Runner' },
+    settings: { quality: 'auto', music: 0.8, sfx: 0.9, shake: true, fps: false, muted: false, ghosts: true, callsign: 'Runner', curves: true },
     missions: freshMissions(),
     garage: freshGarage(),
   };
@@ -79,7 +81,7 @@ const dateKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 
 // ---------------------------------------------------------------- DOM
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
-const screens = ['title', 'hud', 'pause', 'over', 'settings', 'missions', 'garage'] as const;
+const screens = ['title', 'hud', 'pause', 'over', 'settings', 'missions', 'garage', 'replay', 'replays'] as const;
 type Screen = (typeof screens)[number];
 function show(...names: Screen[]) {
   for (const s of screens) $(`#${s}`).classList.toggle('visible', names.includes(s));
@@ -131,7 +133,7 @@ interface Rival {
 }
 
 type RunMode = { kind: 'endless' } | { kind: 'daily'; key: string } | { kind: 'ghost'; rival: Rival };
-type State = 'title' | 'garage' | 'run' | 'paused' | 'dying' | 'over';
+type State = 'title' | 'garage' | 'run' | 'paused' | 'dying' | 'over' | 'replay';
 
 let state: State = 'title';
 let sim = new Sim((Math.random() * 2 ** 31) | 0);
@@ -275,6 +277,7 @@ function gameOver() {
       save.dailyGhost = { seed: sim.seed, log, score, distance: Math.floor(sim.distance), ship, key: mode.key };
     }
   }
+  save.lastRun = { seed: sim.seed, log, score, distance: Math.floor(sim.distance), ship, key: mode.kind === 'daily' ? mode.key : undefined };
   const report = settleRun();
   persist();
 
@@ -339,6 +342,12 @@ function onAction(a: Action) {
   else if (state === 'title' && a === 'jump' && !document.querySelector('.modal.visible')) startRun(challenge ? ghostMode(challenge) : { kind: 'endless' });
   else if (state === 'over' && a === 'jump' && performance.now() - overAt > 800) retry();
   else if (state === 'garage' && a === 'pause') closeGarage();
+  else if (state === 'replay' && rp) {
+    if (a === 'jump') togglePlay();
+    else if (a === 'left') replaySeek(rp.t - 5);
+    else if (a === 'right') replaySeek(rp.t + 5);
+    else if (a === 'pause') rp.photo ? setPhoto(false) : exitReplay();
+  }
 }
 
 // ---------------------------------------------------------------- events → sound + UI
@@ -550,6 +559,8 @@ function frame(now: number) {
     }
     updateHud();
     view.render(sim, dt, state === 'run' ? 'run' : 'dying', time, ghost);
+  } else if (state === 'replay' && rp) {
+    updateReplay(dt, time);
   } else if (state === 'paused') {
     view.render(sim, 0.0001, 'paused', time, ghost);
   } else {
@@ -708,6 +719,196 @@ for (const b of document.querySelectorAll<HTMLButtonElement>('.gar-tab')) {
   });
 }
 
+// ---------------------------------------------------------------- replay theatre
+
+interface ReplaySrc {
+  seed: number;
+  log: InputEntry[];
+  ship: ShipId;
+  name: string;
+  score: number;
+}
+
+const CAMS: CamMode[] = ['cinematic', 'chase', 'side', 'low', 'top', 'orbit'];
+const CAM_LABEL: Record<CamMode, string> = { cinematic: 'Cinematic', chase: 'Chase', side: 'Side', low: 'Low', top: 'Top', orbit: 'Orbit' };
+
+let rp: { src: ReplaySrc; sim: Sim; t: number; speed: number; paused: boolean; duration: number; photo: boolean; seeking: boolean } | null = null;
+
+const fmtTime = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+
+function srcFrom(g: GhostSave | GhostLink, name: string): ReplaySrc | null {
+  const log = decodeLog(g.log);
+  if (!log) return null;
+  return { seed: g.seed, log, ship: isShipId(g.ship) ? g.ship : 'delta', name, score: g.score };
+}
+
+/** Opens a run in the replay theatre. The run is simulated once up front to find its length. */
+function openReplay(src: ReplaySrc) {
+  audio.init();
+  audio.stopSong(false);
+  const probe = new Sim(src.seed, src.log);
+  while (probe.alive && probe.t < 1800) {
+    probe.step(probe.t + 5);
+    probe.events.length = 0;
+  }
+  rp = { src, sim: new Sim(src.seed, src.log), t: 0, speed: 1, paused: false, duration: probe.t + 2, photo: false, seeking: false };
+  sim = rp.sim;
+  ghost = null;
+  view.reset();
+  view.setGhostShip(null);
+  view.setLoadout({ ...save.garage.loadout, ship: src.ship });
+  view.cameraMode = 'cinematic';
+  state = 'replay';
+  $('#rp-name').textContent = src.name;
+  $('#replay').classList.remove('photo');
+  renderReplayControls();
+  show('replay');
+  syncReplayMusic();
+}
+
+function exitReplay() {
+  if (!rp) return;
+  audio.stopSong(false);
+  rp = null;
+  view.cameraMode = 'chase';
+  view.setLoadout(save.garage.loadout);
+  startAttract();
+}
+
+/** Jumps to time t. Going backwards re-simulates from the start (a few milliseconds). */
+function replaySeek(t: number) {
+  if (!rp) return;
+  t = Math.max(0, Math.min(rp.duration, t));
+  if (t < rp.sim.t) {
+    rp.sim = new Sim(rp.src.seed, rp.src.log);
+    sim = rp.sim;
+    view.reset();
+  }
+  rp.sim.step(t);
+  rp.sim.events.length = 0;
+  rp.t = t;
+  view.palette.set(rp.sim.sector, true);
+  syncReplayMusic();
+}
+
+/** Music only makes sense at normal speed; it restarts aligned to the replay's song time. */
+function syncReplayMusic() {
+  if (!rp) return;
+  if (!rp.paused && rp.speed === 1 && rp.sim.alive && !rp.seeking) {
+    audio.startSong(audio.now - rp.t);
+    audio.layer = rp.sim.sector;
+  } else {
+    audio.stopSong(false);
+  }
+}
+
+function togglePlay() {
+  if (!rp) return;
+  if (rp.t >= rp.duration) replaySeek(0);
+  rp.paused = !rp.paused;
+  syncReplayMusic();
+  renderReplayControls();
+}
+
+function setSpeed(v: number) {
+  if (!rp) return;
+  rp.speed = v;
+  syncReplayMusic();
+  renderReplayControls();
+}
+
+function cycleCamera() {
+  const i = CAMS.indexOf(view.cameraMode);
+  view.cameraMode = CAMS[(i + 1) % CAMS.length];
+  renderReplayControls();
+}
+
+function setPhoto(on: boolean) {
+  if (!rp) return;
+  rp.photo = on;
+  if (on && !rp.paused) togglePlay();
+  $('#replay').classList.toggle('photo', on);
+}
+
+function renderReplayControls() {
+  if (!rp) return;
+  $('#rp-play').classList.toggle('playing', !rp.paused);
+  $('#rp-play').setAttribute('aria-label', rp.paused ? 'Play' : 'Pause');
+  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-speed]')) b.classList.toggle('on', Number(b.dataset.speed) === rp.speed);
+  $('#rp-cam').textContent = `Camera: ${CAM_LABEL[view.cameraMode]}`;
+}
+
+function updateReplay(dt: number, time: number) {
+  const r = rp!;
+  if (!r.paused) {
+    r.t = Math.min(r.duration, r.t + dt * r.speed);
+    if (r.t >= r.duration) {
+      r.paused = true;
+      renderReplayControls();
+    }
+  }
+  r.sim.step(r.t);
+  const loud = r.speed === 1 && !r.paused;
+  for (const e of r.sim.events) {
+    view.handle(e, r.sim);
+    if (!loud) continue;
+    if (e.type === 'orb') audio.orb(e.combo);
+    else if (e.type === 'nearMiss') audio.nearMiss();
+    else if (e.type === 'jump') audio.jump();
+    else if (e.type === 'power') audio.power();
+    else if (e.type === 'smash') audio.smash();
+    else if (e.type === 'shieldBreak') audio.shieldBreak();
+    else if (e.type === 'sector') {
+      audio.sector();
+      audio.layer = e.sector;
+    } else if (e.type === 'death') {
+      audio.death();
+      audio.stopSong();
+    }
+  }
+  r.sim.events.length = 0;
+
+  if (!r.seeking) $<HTMLInputElement>('#rp-seek').value = String(Math.round((r.t / r.duration) * 1000));
+  $('#rp-time').textContent = `${fmtTime(r.t)} / ${fmtTime(r.duration)}`;
+  $('#rp-score').textContent = `${fmt(r.sim.score)} pts · ${fmt(r.sim.distance)} m`;
+
+  const viewMode = !r.sim.alive ? 'dying' : r.paused ? 'paused' : 'run';
+  view.render(r.sim, r.paused ? dt : dt * r.speed, viewMode, time);
+}
+
+function openReplays() {
+  const list = $('#rp-list');
+  list.innerHTML = '';
+  const add = (title: string, sub: string, src: ReplaySrc | null) => {
+    if (!src) return;
+    const row = document.createElement('div');
+    row.className = 'rp-row';
+    const text = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = title;
+    const span = document.createElement('span');
+    span.textContent = sub;
+    text.append(b, span);
+    const go = document.createElement('button');
+    go.className = 'btn primary small';
+    go.textContent = 'Watch';
+    go.addEventListener('click', () => openReplay(src));
+    row.append(text, go);
+    list.append(row);
+  };
+  if (save.lastRun) add('Last run', `${fmt(save.lastRun.score)} pts · ${fmt(save.lastRun.distance)} m`, srcFrom(save.lastRun, 'Last run'));
+  if (save.bestGhost) add('Best run', `${fmt(save.bestGhost.score)} pts · ${fmt(save.bestGhost.distance)} m`, srcFrom(save.bestGhost, 'Best run'));
+  if (save.dailyGhost?.key === dateKey()) add('Today’s daily best', `${fmt(save.dailyGhost.score)} pts`, srcFrom(save.dailyGhost, 'Daily best'));
+  if (challenge) add(`${challenge.name}’s run`, `${fmt(challenge.score)} pts · shared ghost`, srcFrom(challenge, `${challenge.name}’s run`));
+  if (!list.children.length) {
+    const empty = document.createElement('p');
+    empty.className = 'ms-note';
+    empty.textContent = 'Finish a run and it will show up here.';
+    list.append(empty);
+  }
+  show('title', 'replays');
+}
+
 // ---------------------------------------------------------------- settings + wiring
 
 function applySettings() {
@@ -717,6 +918,7 @@ function applySettings() {
   audio.muted = s.muted;
   audio.applyVolumes();
   view.shakeEnabled = s.shake;
+  view.curves = s.curves;
   view.setQuality(s.quality);
   $('#fps').hidden = !s.fps;
   $('#mute-btn').classList.toggle('muted', s.muted);
@@ -730,6 +932,7 @@ function openSettings() {
   $<HTMLInputElement>('#set-shake').checked = s.shake;
   $<HTMLInputElement>('#set-fps').checked = s.fps;
   $<HTMLInputElement>('#set-ghosts').checked = s.ghosts;
+  $<HTMLInputElement>('#set-curves').checked = s.curves;
   $<HTMLInputElement>('#set-callsign').value = s.callsign;
   show('title', 'settings');
 }
@@ -798,6 +1001,46 @@ $('#share').addEventListener('click', () => {
   const url = `${location.href.split('#')[0]}#ghost=${encodeGhostLink(link)}`;
   void copyText(`Race my ghost in NEON GRID RUNNER: ${fmt(sim.score)} pts, ${fmt(sim.distance)} m\n${url}`, $('#share'), 'Share ghost');
 });
+$('#watch').addEventListener('click', () => {
+  const src = save.lastRun && srcFrom(save.lastRun, 'Last run');
+  if (src) openReplay(src);
+});
+$('#replays-btn').addEventListener('click', openReplays);
+$('#replays-close').addEventListener('click', () => show('title'));
+$('#challenge-watch').addEventListener('click', () => {
+  const src = challenge && srcFrom(challenge, `${challenge.name}’s run`);
+  if (src) openReplay(src);
+});
+$('#rp-play').addEventListener('click', togglePlay);
+$('#rp-exit').addEventListener('click', exitReplay);
+$('#rp-cam').addEventListener('click', cycleCamera);
+$('#rp-photo').addEventListener('click', () => setPhoto(true));
+$('#rp-photo-exit').addEventListener('click', () => setPhoto(false));
+$('#rp-photo-cam').addEventListener('click', cycleCamera);
+$('#rp-save').addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.href = view.capture();
+  a.download = `neon-grid-runner-${Date.now()}.png`;
+  a.click();
+});
+for (const b of document.querySelectorAll<HTMLButtonElement>('[data-speed]')) b.addEventListener('click', () => setSpeed(Number(b.dataset.speed)));
+const seek = $<HTMLInputElement>('#rp-seek');
+seek.addEventListener('input', () => {
+  if (!rp) return;
+  rp.seeking = true;
+  replaySeek((Number(seek.value) / 1000) * rp.duration);
+});
+seek.addEventListener('change', () => {
+  if (!rp) return;
+  rp.seeking = false;
+  syncReplayMusic();
+});
+window.addEventListener('keydown', (e) => {
+  if (state !== 'replay' || e.target instanceof HTMLInputElement) return;
+  if (e.code === 'KeyC') cycleCamera();
+  else if (e.code === 'KeyH') setPhoto(!rp?.photo);
+});
+
 $('#mute-btn').addEventListener('click', () => {
   save.settings.muted = !save.settings.muted;
   persist();
@@ -816,7 +1059,7 @@ for (const id of ['music', 'sfx'] as const) {
     applySettings();
   });
 }
-for (const id of ['shake', 'fps', 'ghosts'] as const) {
+for (const id of ['shake', 'fps', 'ghosts', 'curves'] as const) {
   $(`#set-${id}`).addEventListener('change', (e) => {
     save.settings[id] = (e.target as HTMLInputElement).checked;
     persist();

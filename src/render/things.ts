@@ -5,6 +5,7 @@ import type { Sim } from '../core/sim.ts';
 import { moverLane, type Obstacle, type Pickup } from '../core/track.ts';
 import { holoMaterial } from './materials.ts';
 import type { LivePalette } from './palette.ts';
+import { bend } from './curve.ts';
 
 const RISE_TIME = 0.35;
 const hdr = (c: THREE.Color, k: number) => new THREE.Color(c.r * k, c.g * k, c.b * k);
@@ -25,17 +26,17 @@ export class Things {
   };
   private mats: Record<'block' | 'mover' | 'low' | 'high', THREE.ShaderMaterial>;
   private geos: Record<'block' | 'mover' | 'low' | 'high', THREE.BufferGeometry>;
-  private laserCore = new THREE.MeshBasicMaterial({ toneMapped: false });
-  private laserGlow = new THREE.MeshBasicMaterial({ toneMapped: false, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false });
-  private underline = new THREE.MeshBasicMaterial({ toneMapped: false });
-  private orbEdge = new THREE.LineBasicMaterial({ toneMapped: false });
-  private orbCore = new THREE.MeshBasicMaterial({ toneMapped: false });
+  private laserCore = bend(new THREE.MeshBasicMaterial({ toneMapped: false }));
+  private laserGlow = bend(new THREE.MeshBasicMaterial({ toneMapped: false, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false }));
+  private underline = bend(new THREE.MeshBasicMaterial({ toneMapped: false }));
+  private orbEdge = bend(new THREE.LineBasicMaterial({ toneMapped: false }));
+  private orbCore = bend(new THREE.MeshBasicMaterial({ toneMapped: false }));
   private orbGeo = new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(0.34, 0));
   private coreGeo = new THREE.SphereGeometry(0.12, 10, 8);
   private powerMats = {
-    shield: new THREE.LineBasicMaterial({ toneMapped: false }),
-    magnet: new THREE.LineBasicMaterial({ toneMapped: false }),
-    overdrive: new THREE.LineBasicMaterial({ toneMapped: false }),
+    shield: bend(new THREE.LineBasicMaterial({ toneMapped: false })),
+    magnet: bend(new THREE.LineBasicMaterial({ toneMapped: false })),
+    overdrive: bend(new THREE.LineBasicMaterial({ toneMapped: false })),
   };
   private ringGeo = new THREE.TorusGeometry(0.8, 0.035, 6, 40);
 
@@ -79,6 +80,8 @@ export class Things {
     const obj = list.pop() ?? make();
     obj.userData.key = key;
     obj.visible = true;
+    // The curved-world bend moves things away from where three.js thinks they are.
+    obj.traverse((o) => (o.frustumCulled = false));
     this.group.add(obj);
     return obj;
   }
@@ -147,7 +150,7 @@ export class Things {
             : new THREE.DodecahedronGeometry(0.4, 0);
       const iconMesh = new THREE.LineSegments(new THREE.EdgesGeometry(icon), mat);
       iconMesh.name = 'icon';
-      const ring = new THREE.Mesh(this.ringGeo, new THREE.MeshBasicMaterial({ toneMapped: false, color: 0xffffff }));
+      const ring = new THREE.Mesh(this.ringGeo, bend(new THREE.MeshBasicMaterial({ toneMapped: false, color: 0xffffff })));
       ring.name = 'ring';
       g.add(iconMesh, ring);
       return g;

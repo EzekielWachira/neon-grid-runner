@@ -1,6 +1,7 @@
 // Particles (sparks, bursts, embers) and the ship's death shards.
 import * as THREE from 'three';
 import { particleMaterial } from './materials.ts';
+import { bend } from './curve.ts';
 
 const MAX = 3000;
 const SHARDS = 60;
@@ -38,7 +39,7 @@ export class Fx {
 
   private shards: THREE.InstancedMesh;
   private shardData: { p: THREE.Vector3; v: THREE.Vector3; r: THREE.Euler; w: THREE.Vector3; life: number }[] = [];
-  private shardMat = new THREE.MeshBasicMaterial({ toneMapped: false });
+  private shardMat = bend(new THREE.MeshBasicMaterial({ toneMapped: false }));
   private tmp = new THREE.Object3D();
 
   constructor() {
